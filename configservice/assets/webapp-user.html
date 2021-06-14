@@ -1,0 +1,141 @@
+<html>
+    <head>
+    </head>
+    <body>
+        <h1>TrustedGateway *User* Page</h1>
+
+        <iframe src="https://www.example.com/" title="Router Legacy WebUI" sandbox></iframe>
+    
+        <hr>
+    
+        <h2>Valid Form</h2>
+        <form action="/trustconf" onsubmit="event.preventDefault(); this.sub_but.click();">
+            <label for="scrip">Source IP:</label><br>
+            <input type="text" id="srcip" name="srcip"><br>
+            <label for="dstip">Destination IP:</label><br>
+            <input type="text" id="dstip" name="dstip"><br><br>
+            <input type="button" id="sub_but" value="Submit" onclick="submitForm(this.form);">
+            <input type="button" value="Clear" onclick="this.form.reset();">
+        </form>
+    
+        <hr>
+    
+        <h2>Invalid Form</h2>
+        <form action="/trustconf" method="post">
+            <label for="scrip">Source IP:</label><br>
+            <input type="text" id="srcip" name="srcip"><br>
+            <label for="dstip">Destination IP:</label><br>
+            <input type="text" id="dstip" name="dstip"><br><br>
+            <input type="submit" value="Submit">
+            <input type="button" value="Clear" onclick="this.form.reset();">
+        </form>
+    
+        <script>
+            function submitForm(form) {
+                var data = new FormData(form);
+                alert("Hello in submitForm(" + form + ")");
+                $.ajax ({
+                    type: "POST",
+                    url: form.action,
+                    headers: {"TruGW-no-csrf" : "add-nonce?"},
+                    data: data,
+                    processData: false,
+                    contentType: "application/octet-stream",
+    //                dataType: "application/octet-stream",
+                    success: function (data, textStatus, jqXHR) {
+                        alert("Data: " + data + "\nStatus: " + textStatus);
+                    },
+                    error: function (jqXHR, ajaxSettings, thrownError) {
+                        alert("Error: " + thrownError);
+                    },
+                });
+            } 
+        </script>
+    
+        <hr>
+        <hr>
+    
+        <h2>Request Admin Access</h2>
+    
+        <h2>Valid Form</h2>
+        <form action="/register-admin" onsubmit="event.preventDefault(); this.sub_but.click();">
+            <label for="certpem">Certificate PEM:</label><br>
+            <textarea name="certpem" rows="20" cols="64"></textarea><br>
+            <input type="button" id="sub_but" value="Submit" onclick="submitCert(this.form);">
+            <input type="button" value="Clear" onclick="this.form.reset();">
+        </form>
+    
+        <script>
+            // same IP, but different port. (TODO: special case where NW != SW IP)
+            var nw_addr = window.location.protocol + '//' + window.location.hostname + ':8000';
+
+            function doSRIScriptLoad(path, integrityVal, doDefer) {
+                var load_node = document.createElement('script');
+                if (doDefer) {
+                  load_node.defer = true;
+                }
+                load_node.async = false;
+                load_node.crossOrigin = "anonymous"; // spelling is important!
+                load_node.integrity = integrityVal;
+                document.getElementsByTagName('body')[0].appendChild(load_node);
+                // trigger load
+                load_node.src = nw_addr + path;
+            }
+
+            /* CSS link node */
+            //https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css
+            var css_node = document.createElement('link');
+            css_node.rel = 'stylesheet';
+            css_node.crossOrigin = "anonymous";
+            css_node.integrity = "sha384-JcKb8q3iqJ61gNV9KGb8thSsNjpSL0n8PARn9HuZOnIxN0hoP+VmmDGMN5t9UJ0Z";
+            document.getElementsByTagName('head')[0].appendChild(css_node);
+            css_node.href = nw_addr + '/webapp_external/bootstrap.min.css';
+
+            /* JS, Popper.js, and jQuery */        
+            //https://code.jquery.com/jquery-3.5.1.min.js
+            doSRIScriptLoad(
+                '/webapp_external/jquery-3.5.1.min.js',
+                'sha384-ZvpUoO/+PpLXR1lu4jmpXWu80pZlYUAfxl5NsBMWOEPSjUn/6Z/hRTt8+pR6L4N2',
+                true
+            );
+
+            //https://cdn.jsdelivr.net/npm/popper.js@1.16.1/dist/umd/popper.min.js
+            doSRIScriptLoad(
+                '/webapp_external/popper.min.js',
+                'sha384-9/reFTGAW83EW2RDu2S0VKaIzap3H66lZH81PoYlFhbGU+6BZp6G7niu735Sk7lN',
+                true
+            );
+
+            //https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js
+            doSRIScriptLoad(
+                '/webapp_external/bootstrap.min.js',
+                'sha384-B4gt1jrGC7Jh4AgTPSdUtOBvfO8shuf57BaghqFfPlYxofvL8/KUEfYiJOMMV+rV',
+                true
+            );
+        </script>
+
+        <script>
+            function submitCert(form) {
+                var data = form.elements["certpem"].value
+                //data = data.replace(/\n/g, "\r\n");
+                data += "\0"; // expected by mbedTLS for PEM format
+                alert("Hello in submitCert: " + data);
+                $.ajax ({
+                    type: "POST",
+                    url: form.action,
+                    headers: {"BstGw-no-csrf" : "add-nonce?"},
+                    data: data,
+                    //processData: false,
+                    contentType: "text/plain",
+    //                dataType: "application/octet-stream",
+                    success: function (data, textStatus, jqXHR) {
+                        alert("Data: " + data + "\nStatus: " + textStatus);
+                    },
+                    error: function (jqXHR, ajaxSettings, thrownError) {
+                        alert("Error: " + thrownError);
+                    },
+                });
+            } 
+        </script>
+    </body>
+</html>
