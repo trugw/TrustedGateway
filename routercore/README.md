@@ -1,5 +1,5 @@
-# RouterCore
+# RouterCore (now: NetTrug)
 
-RouterCore, RouterHelper, NAPI-like trusted worker scheduling.
+RouterCore (NetTrug), RouterHelper, NAPI-like trusted worker scheduling.
 
 More information will follow in the near future.
