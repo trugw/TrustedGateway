@@ -1,0 +1,54 @@
+diff --git a/drivers/net/ethernet/freescale/Kconfig b/drivers/net/ethernet/freescale/Kconfig
+index f9d3300d4b2b..f167099b783a 100644
+--- a/drivers/net/ethernet/freescale/Kconfig
++++ b/drivers/net/ethernet/freescale/Kconfig
+@@ -30,6 +31,8 @@ config FEC
+ 	  Say Y here if you want to use the built-in 10/100 Fast ethernet
+ 	  controller on some Motorola ColdFire and Freescale i.MX processors.
+ 
++source "drivers/net/ethernet/freescale/bstgw/Kconfig"
++
+ config FEC_MPC52xx
+ 	tristate "FEC MPC52xx driver"
+ 	depends on PPC_MPC52xx && PPC_BESTCOMM
+diff --git a/drivers/net/ethernet/freescale/Makefile b/drivers/net/ethernet/freescale/Makefile
+index 823f75a84809..dcf04b195ea2 100644
+--- a/drivers/net/ethernet/freescale/Makefile
++++ b/drivers/net/ethernet/freescale/Makefile
+@@ -6,6 +6,8 @@
+ obj-$(CONFIG_FEC) += fec.o
+ fec-objs :=fec_main.o fec_fixup.o fec_ptp.o
+ 
++obj-$(CONFIG_FEC_BSTGW) += bstgw/
++
+ obj-$(CONFIG_FEC_MPC52xx) += fec_mpc52xx.o
+ ifeq ($(CONFIG_FEC_MPC52xx_MDIO),y)
+ 	obj-$(CONFIG_FEC_MPC52xx) += fec_mpc52xx_phy.o
+diff --git a/arch/arm/mach-imx/mach-imx6q.c b/arch/arm/mach-imx/mach-imx6q.c
+index fabdc76a6ead..4f2670f968e3 100644
+--- a/arch/arm/mach-imx/mach-imx6q.c
++++ b/arch/arm/mach-imx/mach-imx6q.c
+@@ -200,7 +200,11 @@ static void __init imx6q_1588_init(void)
+ 	struct clk *ptp_clk;
+ 	struct regmap *gpr;
+ 
++#if defined(CONFIG_FEC_BSTGW)
++    np = of_find_compatible_node(NULL, NULL, "fsl,bstgw-imx6q-fec");
++#else
+ 	np = of_find_compatible_node(NULL, NULL, "fsl,imx6q-fec");
++#endif
+ 	if (!np) {
+ 		pr_warn("%s: failed to find fec node\n", __func__);
+ 		return;
+diff --git a/.config b/.config
+index d154078..0729764 100644
+--- a/.config
++++ b/.config
+@@ -1858,6 +1858,7 @@ CONFIG_NET_VENDOR_EXAR=y
+ # CONFIG_NET_VENDOR_FARADAY is not set
+ CONFIG_NET_VENDOR_FREESCALE=y
+ CONFIG_FEC=y
++CONFIG_FEC_BSTGW=y
+ # CONFIG_FSL_PQ_MDIO is not set
+ # CONFIG_FSL_XGMAC_MDIO is not set
+ # CONFIG_GIANFAR is not set

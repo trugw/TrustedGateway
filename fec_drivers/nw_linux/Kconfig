@@ -1,0 +1,14 @@
+#
+# Untrusted FEC device configuration
+#
+
+config FEC_BSTGW
+	tristate "Untrusted part of FEC ethernet controller (of i.MX6 CPUs)"
+	depends on (ARM || ARM64)
+	default y
+	select PHYLIB
+	imply PTP_1588_CLOCK
+	---help---
+	  Untrusted half of the 10/100/1000 Fast ethernet controller on Freescale
+	  i.MX6 processors.
+
