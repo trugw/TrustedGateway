@@ -15,7 +15,7 @@
 
 #include <string.h>
 
-#define PTA_NAME "bstgw_trust_router.pta"
+#define PTA_NAME "bstgw_nettrug.pta"
 
 
 static TEE_Result bstgw_firewall_config(uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS]);
@@ -216,8 +216,6 @@ int bstgw_npfctl_cmd(uint64_t op, nvlist_t *req, nvlist_t *resp) {
 }
 
 static TEE_Result bstgw_firewall_config(uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS]) {
-	// TODO: ConfHub TA makes more sense if intermediate FW language would be added
-	//const TEE_UUID ta_ref_uuid = BSTGW_TA_CONF_HUB_UUID;
 	const TEE_UUID ta_ref_uuid = BSTGW_TA_WEB_STUB_UUID;
 	TEE_Result res;
 	if( (res = bstgw_called_by_trusted_app(&ta_ref_uuid)) != TEE_SUCCESS ) {

@@ -1,8 +1,15 @@
 /*
+ * Copyright 2022 Fabian Schwarz and CISPA Helmholtz Center for Information Security
+ * All rights reserved.
+ *
+ * Use is subject to the license terms, as specified in the project LICENSE file.
+ *
+ * ----------------------------------------------------------------------
+ *
  * Copyright (c) 2020 Mindaugas Rasiukevicius <rmind at noxt eu>
  * All rights reserved.
  *
- * Use is subject to license terms, as specified in the LICENSE file.
+ * Use is subject to license terms, as specified in the NPF_LICENSE file.
  */
 
 #ifndef _NPF_ROUTER_H_

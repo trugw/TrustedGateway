@@ -1,10 +1,3 @@
-/*
- * Copyright (c) 2020 Mindaugas Rasiukevicius <rmind at noxt eu>
- * All rights reserved.
- *
- * Use is subject to license terms, as specified in the LICENSE file.
- */
-
 #include <stdio.h>
 #include <stdbool.h>
 #include <unistd.h>
@@ -374,7 +367,7 @@ router_create(unsigned int nworkers)
 
 	// note: we need n workers, plus 1 notifier/cleaner, plus at least 1 for the rest
 	if ( (CFG_NUM_THREADS - 2) < nworkers ) {
-		EMSG("Not enough threads for the TrustedGateway");
+		EMSG("Not enough threads for TrustedGateway");
 		return NULL;
 	}
 	if ( (CFG_TEE_CORE_NB_CORE - 2) < nworkers ) {

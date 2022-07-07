@@ -1,8 +1,15 @@
 /*
+ * Copyright 2022 Fabian Schwarz and CISPA Helmholtz Center for Information Security
+ * All rights reserved.
+ *
+ * Use is subject to the license terms, as specified in the project LICENSE file.
+ *
+ * ----------------------------------------------------------------------
+ *
  * Copyright (c) 2020 Mindaugas Rasiukevicius <rmind at noxt eu>
  * All rights reserved.
  *
- * Use is subject to license terms, as specified in the LICENSE file.
+ * Use is subject to license terms, as specified in the NPF_LICENSE file.
  */
 
 #include <string.h>
@@ -93,8 +100,8 @@ static const char *router_config_str = "ifconfig NW 192.168.178.11\n"
 	"route 192.168.178.49/32 NW 0\n"
 	"route 172.16.0.49/32 NW 1\n"
 	"route 192.168.178.0/24 imx6q-fec 0\n"
-	"route 172.16.0.0/24 imx6q-fec 1\n"
-	"route 0.0.0.0/0 imx6q-fec 0 192.168.178.1\n";
+	"route 172.16.0.0/24 imx6q-fec 1\n";
+//	"route 0.0.0.0/0 imx6q-fec 0 192.168.178.1\n";
 
 /*
 // 2 subnetworks, but with fritz!box
