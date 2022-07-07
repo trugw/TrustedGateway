@@ -1,4 +1,4 @@
-SJCL (sjcl.js) is distributed under the following BSD license:
+SJDL (webapp_external/sjcl.js) is distributed under the following BSD license:
 
 http://opensource.org/licenses/BSD-2-Clause
 

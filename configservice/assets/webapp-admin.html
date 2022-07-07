@@ -121,16 +121,16 @@
           );
 
           /* npfctl JS */
-          npfctl_script_sri = "sha384-7EY6e5EIznZNJtVoEkB+uMlvEU6O1Pu+XM3LklVgGvn7Cm/do8nro8HoDNysVBcn";
+          npfctl_script_sri = "sha384-DHJuiqhNk8hnLbGAFHq9+cAyznPoq+qvHJ+lYXOOcjtjT39coZhMDUqE09n9SWb7";
 
           doSRIScriptLoad(
-            '/webapp/npfctl.js',
+            '/webapp-npfctl/npfctl.js',
             npfctl_script_sri,
             true
           );
         </script>
 
-        <!-- <script async type="text/javascript" src="http://localhost:8000/webapp/npfctl.js"></script> -->
+        <!-- <script async type="text/javascript" src="http://localhost:8000/webapp-npfctl/npfctl.js"></script> -->
     
         <h2>Full Config Submit</h2>
         <form onsubmit="event.preventDefault(); this.sub_but.click();">
@@ -166,7 +166,7 @@
                 $.ajax ({
                     type: "POST",
                     url: form.action,
-                    headers: {"TruGW-no-csrf" : "add-nonce?"},
+                    headers: {"BstGw-no-csrf" : "add-nonce?"},
                     data: data,
                     processData: false,
                     contentType: "application/octet-stream",

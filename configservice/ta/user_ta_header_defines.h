@@ -23,9 +23,9 @@
 #define TA_DATA_SIZE			(128 * 1024) // TODO: default is (32 * 1024)
 
 /* The gpd.ta.version property */
-#define TA_VERSION	"0.1"
+#define TA_VERSION	"1.0"
 
 /* The gpd.ta.description property */
-#define TA_DESCRIPTION	"ConfigService TA ++ integrated WebStub for trusted configuration of the TrustedGateway"
+#define TA_DESCRIPTION	"ConfigService TA for trusted configuration of the TrustedGateway"
 
 #endif /* USER_TA_HEADER_DEFINES_H */

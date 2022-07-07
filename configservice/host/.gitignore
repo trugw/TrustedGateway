@@ -1,2 +1,2 @@
 *.o
-optee_example_web_helper
+optee_example_sock_helper

@@ -3,7 +3,7 @@
 #include <string.h>
 #include <tee_internal_api.h> // *MSG()
 
-static const char *csrf_hdr = "TruGW-no-csrf";
+static const char *csrf_hdr = "BstGw-no-csrf";
 
 int has_csrf_header(struct parsing_info *pinfo) {
     int found = 0;

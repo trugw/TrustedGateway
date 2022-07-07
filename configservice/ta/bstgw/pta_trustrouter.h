@@ -1,1 +1,1 @@
-../../../routercore/pta/pta_trustrouter.h
+../../../nettrug/pta/pta_trustrouter.h

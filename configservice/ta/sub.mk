@@ -19,13 +19,5 @@ cflags-ringbuffer.c-y += -DBSTGW_TA=1
 #NOTE: requires CFG_TA_MBEDTLS in OP-TEE which will auto-link the mbedTLS UTA
 #      library against every user TA
 
-#Note: in the beginning we tried to ship an own mbedTLS lib, but this causes
-#      double definitions if CFG_TA_MBEDTLS is set in OP-TEE
-
-#incdirs-y += ../external/mbedtls/include
-#libnames = utils utee dl mbedall-tzr
-#libnames += mbedall-tzr
-#libdirs += ../external/ta-libs/mbedtls
-
 # To remove a certain compiler flag, add a line like this
 #cflags-template_ta.c-y += -Wno-strict-prototypes
