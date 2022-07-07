@@ -1,9 +1,11 @@
 /*
  * Virtio Support
  *
+ * Copyright Fabian Schwarz and CISPA Helmholtz Center for Information Security 2022
  * Copyright IBM, Corp. 2007
  *
  * Authors:
+ *  Fabian Schwarz    <fabian.schwarz@cispa.saarland>
  *  Anthony Liguori   <aliguori@us.ibm.com>
  *
  * This work is licensed under the terms of the GNU GPL, version 2.  See

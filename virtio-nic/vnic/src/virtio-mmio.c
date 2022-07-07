@@ -1,9 +1,11 @@
 /*
  * Virtio MMIO bindings
  *
+ * Copyright (c) 2022 Fabian Schwarz and CISPA Helmholtz Center for Information Security
  * Copyright (c) 2011 Linaro Limited
  *
  * Author:
+ *  Fabian Schwarz <fabian.schwarz@cispa.saarland>
  *  Peter Maydell <peter.maydell@linaro.org>
  *
  * This program is free software; you can redistribute it and/or modify
