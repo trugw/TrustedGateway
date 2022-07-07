@@ -1,3 +1,27 @@
 [submodule "configservice/external/picohttpparser"]
 	path = configservice/external/picohttpparser
 	url = https://github.com/h2o/picohttpparser.git
+[submodule "external/npf"]
+	path = external/npf
+	url = https://github.com/trugw/npf.git
+[submodule "external/nvlist"]
+	path = external/nvlist
+	url = https://github.com/rmind/nvlist.git
+[submodule "external/libcdb"]
+	path = external/libcdb
+	url = https://github.com/rmind/libcdb.git
+[submodule "external/libqsbr"]
+	path = external/libqsbr
+	url = https://github.com/rmind/libqsbr.git
+[submodule "external/thmap"]
+	path = external/thmap
+	url = https://github.com/rmind/thmap.git
+[submodule "external/liblpm"]
+	path = external/liblpm
+	url = https://github.com/rmind/liblpm.git
+[submodule "external/bpfjit"]
+	path = external/bpfjit
+	url = https://github.com/rmind/bpfjit.git
+[submodule "external/secloak-kernel"]
+	path = external/secloak-kernel
+	url = https://github.com/trugw/secloak-kernel.git
