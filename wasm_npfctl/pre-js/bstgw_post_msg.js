@@ -91,9 +91,9 @@ function callNpfctl(args) {
 var base_addr;
 var wasm_addr;
 if (!base_addr) {
-  wasm_addr = 'http://localhost:8000/webapp/npfctl.wasm';
+  wasm_addr = 'http://localhost:8000/webapp-npfctl/npfctl.wasm';
 } else {
-  wasm_addr = base_addr + ':8000/webapp/npfctl.wasm';
+  wasm_addr = base_addr + ':8000/webapp-npfctl/npfctl.wasm';
 }
 console.log('Will fetch wasm from: ' + wasm_addr);
 

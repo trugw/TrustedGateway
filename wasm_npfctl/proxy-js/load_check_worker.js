@@ -2,7 +2,7 @@
 /*
 var filename;
 if (!filename) {
-  filename = 'http://localhost:8000/webapp/npfctl.worker.js';
+  filename = 'http://localhost:8000/webapp-npfctl/npfctl.worker.js';
 }
 
 var workerURL = filename;
@@ -14,8 +14,8 @@ if (SUPPORT_BASE64_EMBEDDING) {
 }
 */
 
-//var filename = 'http://localhost:8000/webapp/npfctl.worker.js';
-var filename = location.protocol + '//' + location.hostname + ':8000/webapp/npfctl.worker.js';
+//var filename = 'http://localhost:8000/webapp-npfctl/npfctl.worker.js';
+var filename = location.protocol + '//' + location.hostname + ':8000/webapp-npfctl/npfctl.worker.js';
 var resp = $.ajax ({
   type: "GET",
   async: false,

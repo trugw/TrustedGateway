@@ -24,7 +24,7 @@ if   [ ! -f "${MAIN_JS}" ]   || \
     { echo "... FAIL"; exit 1; }
 fi
 
-WEB_ASSETS_DIR="../../configserivce/assets"
+WEB_ASSETS_DIR="../../configservice/assets"
 if [ ! -d "${WEB_ASSETS_DIR}" ]; then
     echo "WebServer assets directory missing"
     echo "Missing: ${WEB_ASSETS_DIR}"
