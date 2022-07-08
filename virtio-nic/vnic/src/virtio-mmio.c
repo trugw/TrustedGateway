@@ -1,7 +1,7 @@
 /*
  * Virtio MMIO bindings
  *
- * Copyright (c) 2022 Fabian Schwarz and CISPA Helmholtz Center for Information Security
+ * Copyright (c) 2022 Fabian Schwarz (CISPA Helmholtz Center for Information Security)
  * Copyright (c) 2011 Linaro Limited
  *
  * Author:

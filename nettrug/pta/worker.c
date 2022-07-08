@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 Fabian Schwarz and CISPA Helmholtz Center for Information Security
+ * Copyright 2022 Fabian Schwarz (CISPA Helmholtz Center for Information Security)
  * All rights reserved.
  *
  * Use is subject to the license terms, as specified in the project LICENSE file.

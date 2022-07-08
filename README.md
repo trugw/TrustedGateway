@@ -364,6 +364,8 @@ Note that many files have incomplete/missing copyright and/or licensing informat
 where the additional (or exclusive) GPLv2 licensing is not explicitly repeated,
 but still applied.
 
+Copyright: Fabian Schwarz (CISPA Helmholtz Center for Information Security)
+
 
 ## Limitations / Todos
 Please note again that this is a *proof of concept* research prototype.

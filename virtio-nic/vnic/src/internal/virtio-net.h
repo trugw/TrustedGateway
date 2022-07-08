@@ -1,7 +1,7 @@
 /*
  * Virtio Network Device
  *
- * Copyright Fabian Schwarz and CISPA Helmholtz Center for Information Security 2022
+ * Copyright Fabian Schwarz (CISPA Helmholtz Center for Information Security) 2022
  * Copyright IBM, Corp. 2007
  *
  * Authors:
