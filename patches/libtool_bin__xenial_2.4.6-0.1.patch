@@ -1,0 +1,13 @@
+--- /usr/bin/libtool	2020-06-03 11:58:52.385201275 +0200
++++ ./libtool	2020-06-03 11:56:36.431879427 +0200
+@@ -318,7 +318,9 @@
+ old_archive_cmds="\$AR \$AR_FLAGS \$oldlib\$oldobjs~\$RANLIB \$tool_oldlib"
+ 
+ # A language specific compiler.
+-CC="gcc"
++if [ -z "$CC" ]; then
++    CC="gcc"
++fi
+ 
+ # Is the compiler the GNU compiler?
+ with_gcc=yes

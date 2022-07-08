@@ -1,0 +1,1629 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..1aee782
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,2 @@
++tzr-out/
++nw-out/
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..3dd0f44
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,48 @@
++export V ?= 0
++
++OUTPUT_DIR := $(CURDIR)/tzr-out
++
++# If _HOST or _TA specific compilers are not specified, then use CROSS_COMPILE
++HOST_CROSS_COMPILE ?= $(CROSS_COMPILE)
++TA_CROSS_COMPILE ?= $(CROSS_COMPILE)
++
++.PHONY: all
++all: lpm lpm-tzr prepare-for-rootfs
++
++.PHONY: clean
++clean: lpm-clean lpm-tzr-clean prepare-for-rootfs-clean
++
++lpm: CROSS_COMPILE="$(HOST_CROSS_COMPILE)"
++lpm: export CC      ?= $(CROSS_COMPILE)gcc
++lpm: export LD      ?= $(CROSS_COMPILE)ld
++lpm: export AR      ?= $(CROSS_COMPILE)ar
++lpm: export NM      ?= $(CROSS_COMPILE)nm
++lpm: export OBJCOPY ?= $(CROSS_COMPILE)objcopy
++lpm: export OBJDUMP ?= $(CROSS_COMPILE)objdump
++lpm: export READELF ?= $(CROSS_COMPILE)readelf
++
++lpm: export CFLAGS  += -Wall -I$(TEEC_EXPORT)/include
++lpm: export LDFLAGS += -lteec -L$(TEEC_EXPORT)/lib
++
++lpm:
++	$(MAKE) -C src LIBDIR=`pwd`/nw-out/ lib || exit -1;
++	$(MAKE) -C src LIBDIR=. DESTDIR=`pwd`/nw-out install || exit -1;
++
++lpm-clean:
++	$(MAKE) -C src clean || exit -1;
++
++lpm-tzr:
++	$(MAKE) -C src -f TZRMakefile CROSS_COMPILE="$(TA_CROSS_COMPILE)" LDFLAGS="" || exit -1;
++
++lpm-tzr-clean:
++	$(MAKE) -C src -f TZRMakefile clean || exit -1;
++
++prepare-for-rootfs: lpm-tzr
++	@echo "Copying example TLIB to $(OUTPUT_DIR)..."
++	@mkdir -p $(OUTPUT_DIR)
++	@mkdir -p $(OUTPUT_DIR)/tlib
++	cp -pr src/tzr-build/*.a $(OUTPUT_DIR)/tlib/; \
++
++prepare-for-rootfs-clean:
++	@rm -rf $(OUTPUT_DIR)/tlib
++	@rmdir --ignore-fail-on-non-empty $(OUTPUT_DIR) || test ! -e $(OUTPUT_DIR)
+diff --git a/src/.gitignore b/src/.gitignore
+new file mode 100644
+index 0000000..c88d149
+--- /dev/null
++++ b/src/.gitignore
+@@ -0,0 +1,7 @@
++.*.cmd
++.*.d
++*.a
++*.o
++*.lo
++*.la
++.libs/
+diff --git a/src/Makefile b/src/Makefile
+index d140512..7bccd21 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -58,10 +58,11 @@ lib: $(LIB).la
+ 	$(CC) $(CFLAGS) -c $<
+ 
+ %.lo: %.c
+-	libtool --mode=compile --tag CC $(CC) $(CFLAGS) -fPIC -c $<
++	libtool --mode=compile --tag CC "$(CC)" $(CFLAGS) -fPIC -c $<
+ 
+ $(LIB).la: $(shell echo $(OBJS) | sed 's/\.o/\.lo/g')
+-	libtool --mode=link --tag CC $(CC) $(LDFLAGS) -o $@ $(notdir $^)
++	#libtool --mode=link --tag CC $(CC) $(LDFLAGS) -o $@ $(notdir $^)
++	CC=$(CC) libtool --mode=link --tag CC false $(LDFLAGS) -o $@ $(notdir $^)
+ 
+ install/%.la: %.la
+ 	mkdir -p $(ILIBDIR)
+diff --git a/src/TZRMakefile b/src/TZRMakefile
+new file mode 100644
+index 0000000..3429df6
+--- /dev/null
++++ b/src/TZRMakefile
+@@ -0,0 +1,41 @@
++CFG_TEE_TA_LOG_LEVEL ?= 4
++CPPFLAGS += -DCFG_TEE_TA_LOG_LEVEL=$(CFG_TEE_TA_LOG_LEVEL)
++
++# separate tzr object files into separate directory
++O=tzr-build
++
++# lpm specific stuff -----
++CLFLAGS+=	-DTZR_OPTEE
++CPPFLAGS+=	-DTZR_OPTEE
++
++CLFLAGS+=	-DTZR_TA_OPTEE
++CPPFLAGS+=	-DTZR_TA_OPTEE
++
++CFLAGS+=	-DNDEBUG
++CPPFLAGS+=	-DNDEBUG
++
++##
++#CFLAGS+=	-DENOMEM=\(12\)
++#CFLAGS+=	-DEEXIST=\(17\)
++
++#INCS=		lpm.h
++#OBJS=		lpm.o
++
++## fixes -----
++### those are usually extern "C" { and }, but compiler complained about it
++CFLAGS+=	-D__BEGIN_DECLS=
++CFLAGS+=	-D__END_DECLS=
++
++## / -----
++# / -----
++
++# The name of the static library
++LIBNAME=$(O)/liblpm-tzr
++
++-include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
++
++ifeq ($(wildcard $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk), )
++clean:
++	@echo 'Note: $$(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk not found, cannot clean TA'
++	@echo 'Note: TA_DEV_KIT_DIR=$(TA_DEV_KIT_DIR)'
++endif
+diff --git a/src/external/include/newlib/_endian.h b/src/external/include/newlib/_endian.h
+new file mode 100644
+index 0000000..3b3c0ed
+--- /dev/null
++++ b/src/external/include/newlib/_endian.h
+@@ -0,0 +1,24 @@
++#ifndef __NEWLIB_MACHINE_ENDIAN_H__
++#error "must be included via <newlib/endian.h>"
++#endif /* !__NEWLIB_MACHINE_ENDIAN_H__ */
++
++#ifndef _LITTLE_ENDIAN
++#define	_LITTLE_ENDIAN	1234
++#endif
++
++#ifndef _BIG_ENDIAN
++#define	_BIG_ENDIAN	4321
++#endif
++
++#ifndef _PDP_ENDIAN
++#define	_PDP_ENDIAN	3412
++#endif
++
++#ifndef _BYTE_ORDER
++#if defined(__IEEE_BIG_ENDIAN) || defined(__IEEE_BYTES_BIG_ENDIAN)
++#define	_BYTE_ORDER	_BIG_ENDIAN
++#else
++#define	_BYTE_ORDER	_LITTLE_ENDIAN
++#endif
++
++#endif
+diff --git a/src/external/include/newlib/arpa/inet.h b/src/external/include/newlib/arpa/inet.h
+new file mode 100644
+index 0000000..7c4656f
+--- /dev/null
++++ b/src/external/include/newlib/arpa/inet.h
+@@ -0,0 +1,80 @@
++/*
++ * Copyright (c) 1983, 1993
++ *	The Regents of the University of California.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ * -
++ * Portions Copyright (c) 1993 by Digital Equipment Corporation.
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies, and that
++ * the name of Digital Equipment Corporation not be used in advertising or
++ * publicity pertaining to distribution of the document or software without
++ * specific, written prior permission.
++ * 
++ * THE SOFTWARE IS PROVIDED "AS IS" AND DIGITAL EQUIPMENT CORP. DISCLAIMS ALL
++ * WARRANTIES WITH REGARD TO THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS.   IN NO EVENT SHALL DIGITAL EQUIPMENT
++ * CORPORATION BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
++ * DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
++ * PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
++ * ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
++ * SOFTWARE.
++ *
++ *	@(#)inet.h	8.1 (Berkeley) 6/2/93
++ *	From: Id: inet.h,v 8.5 1997/01/29 08:48:09 vixie Exp $
++ * $FreeBSD: src/include/arpa/inet.h,v 1.22 2002/04/10 10:51:53 mike Exp $
++ */
++
++#ifndef _NEWLIB_ARPA_INET_H_
++#define	_NEWLIB_ARPA_INET_H_
++
++#define	INET_ADDRSTRLEN		16
++#define	INET6_ADDRSTRLEN	46
++
++/*
++ * XXX socklen_t is used by a POSIX.1-2001 interface, but not required by
++ * POSIX.1-2001.
++ */
++
++
++#ifndef __socklen_t_defined
++typedef unsigned int socklen_t;
++#define __socklen_t_defined 1
++#endif
++
++#ifndef _STRUCT_IN_ADDR_DECLARED
++struct in_addr {
++	in_addr_t s_addr;
++};
++#define	_STRUCT_IN_ADDR_DECLARED
++#endif
++
++__BEGIN_DECLS
++int		 inet_pton(int, const char *, void *);
++__END_DECLS
++
++#endif /* !_NEWLIB_ARPA_INET_H_ */
+diff --git a/src/external/include/newlib/arpa/nameser.h b/src/external/include/newlib/arpa/nameser.h
+new file mode 100644
+index 0000000..f55dc15
+--- /dev/null
++++ b/src/external/include/newlib/arpa/nameser.h
+@@ -0,0 +1,62 @@
++/*
++ * Copyright (c) 1983, 1989, 1993
++ *    The Regents of the University of California.  All rights reserved.
++ * 
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ * 
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++/*
++ * Copyright (c) 1996 by Internet Software Consortium.
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND INTERNET SOFTWARE CONSORTIUM DISCLAIMS
++ * ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL INTERNET SOFTWARE
++ * CONSORTIUM BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
++ * DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
++ * PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
++ * ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
++ * SOFTWARE.
++ */
++
++/*
++ *	From: Id: nameser.h,v 8.16 1998/02/06 00:35:58 halley Exp
++ * $FreeBSD: src/include/arpa/nameser.h,v 1.16 2002/03/23 17:24:55 imp Exp $
++ */
++
++#ifndef _NEWLIB_ARPA_NAMESER_H_
++#define _NEWLIB_ARPA_NAMESER_H_
++
++/*
++ * Define constants based on RFC 883, RFC 1034, RFC 1035
++ */
++#define NS_INT16SZ	2	/* #/bytes of data in a u_int16_t */
++#define NS_INADDRSZ	4	/* IPv4 T_A */
++#define NS_IN6ADDRSZ	16	/* IPv6 T_AAAA */
++
++#endif /* !_NEWLIB_ARPA_NAMESER_H_ */
+diff --git a/src/external/include/newlib/endian.h b/src/external/include/newlib/endian.h
+new file mode 100644
+index 0000000..3d3407b
+--- /dev/null
++++ b/src/external/include/newlib/endian.h
+@@ -0,0 +1,96 @@
++#ifndef __NEWLIB_MACHINE_ENDIAN_H__
++#define	__NEWLIB_MACHINE_ENDIAN_H__
++
++#include <newlib/_endian.h>
++
++#if _BYTE_ORDER == _LITTLE_ENDIAN
++#define	_QUAD_HIGHWORD	1
++#define	_QUAD_LOWWORD	0
++#else
++#define	_QUAD_HIGHWORD	0
++#define	_QUAD_LOWWORD	1
++#endif
++
++#define	LITTLE_ENDIAN	_LITTLE_ENDIAN
++#define	BIG_ENDIAN	_BIG_ENDIAN
++#define	PDP_ENDIAN	_PDP_ENDIAN
++#define	BYTE_ORDER	_BYTE_ORDER
++
++#ifdef __GNUC__
++#define	__bswap16(_x)	__builtin_bswap16(_x)
++#define	__bswap32(_x)	__builtin_bswap32(_x)
++#define	__bswap64(_x)	__builtin_bswap64(_x)
++#else /* __GNUC__ */
++static __inline __uint16_t
++__bswap16(__uint16_t _x)
++{
++
++	return ((__uint16_t)((_x >> 8) | ((_x << 8) & 0xff00)));
++}
++
++static __inline __uint32_t
++__bswap32(__uint32_t _x)
++{
++
++	return ((__uint32_t)((_x >> 24) | ((_x >> 8) & 0xff00) |
++	    ((_x << 8) & 0xff0000) | ((_x << 24) & 0xff000000)));
++}
++
++static __inline __uint64_t
++__bswap64(__uint64_t _x)
++{
++
++	return ((__uint64_t)((_x >> 56) | ((_x >> 40) & 0xff00) |
++	    ((_x >> 24) & 0xff0000) | ((_x >> 8) & 0xff000000) |
++	    ((_x << 8) & ((__uint64_t)0xff << 32)) |
++	    ((_x << 24) & ((__uint64_t)0xff << 40)) |
++	    ((_x << 40) & ((__uint64_t)0xff << 48)) | ((_x << 56))));
++}
++#endif /* !__GNUC__ */
++
++#if _BYTE_ORDER == _LITTLE_ENDIAN
++#define	htonl(_x)	__bswap32(_x)
++#define	htons(_x)	__bswap16(_x)
++#define	ntohl(_x)	__bswap32(_x)
++#define ntohs(_x)	__bswap16(_x)
++#else
++#define	htonl(_x)	((__uint32_t)(_x))
++#define	htons(_x)	((__uint16_t)(_x))
++#define	ntohl(_x)	((__uint32_t)(_x))
++#define ntohs(_x)	((__uint16_t)(_x))
++#endif
++
++#if _BYTE_ORDER == _LITTLE_ENDIAN
++#define htobe16(x) __bswap16 (x)
++#define htole16(x) (x)
++#define be16toh(x) __bswap16 (x)
++#define le16toh(x) (x)
++
++#define htobe32(x) __bswap32 (x)
++#define htole32(x) (x)
++#define be32toh(x) __bswap32 (x)
++#define le32toh(x) (x)
++
++#define htobe64(x) __bswap64 (x)
++#define htole64(x) (x)
++#define be64toh(x) __bswap64 (x)
++#define le64toh(x) (x)
++
++#else
++#define htobe16(x) (x)
++#define htole16(x) __bswap16 (x)
++#define be16toh(x) (x)
++#define le16toh(x) __bswap16 (x)
++
++#define htobe32(x) (x)
++#define htole32(x) __bswap32 (x)
++#define be32toh(x) (x)
++#define le32toh(x) __bswap32 (x)
++
++#define htobe64(x) (x)
++#define htole64(x) __bswap64 (x)
++#define be64toh(x) (x)
++#define le64toh(x) __bswap64 (x)
++#endif
++
++#endif /* __NEWLIB_MACHINE_ENDIAN_H__ */
+diff --git a/src/external/include/newlib/linux/sys/socket.h b/src/external/include/newlib/linux/sys/socket.h
+new file mode 100644
+index 0000000..bcfe2a0
+--- /dev/null
++++ b/src/external/include/newlib/linux/sys/socket.h
+@@ -0,0 +1,136 @@
++/*
++ * Copyright (c) 1982, 1985, 1986, 1988, 1993, 1994
++ *	The Regents of the University of California.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ *
++ *	@(#)socket.h	8.4 (Berkeley) 2/21/94
++ * $FreeBSD: src/sys/sys/socket.h,v 1.60 2002/04/20 02:24:35 mike Exp $
++ */
++
++#ifndef _NEWLIB_SYS_SOCKET_H_
++#define	_NEWLIB_SYS_SOCKET_H_
++
++#include <sys/types.h>
++#include <newlib/netinet/in.h>
++//#include <netdb.h>
++
++/* Needed by linuxthreads. */
++
++# define __SOCKADDR_ARG		struct sockaddr *__restrict
++# define __CONST_SOCKADDR_ARG	__const struct sockaddr *
++
++/* Protocol families.  */
++#define	PF_UNSPEC	0	/* Unspecified.  */
++#define	PF_LOCAL	1	/* Local to host (pipes and file-domain).  */
++#define	PF_UNIX		PF_LOCAL /* Old BSD name for PF_LOCAL.  */
++#define	PF_FILE		PF_LOCAL /* Another non-standard name for PF_LOCAL.  */
++#define	PF_INET		2	/* IP protocol family.  */
++#define	PF_AX25		3	/* Amateur Radio AX.25.  */
++#define	PF_IPX		4	/* Novell Internet Protocol.  */
++#define	PF_APPLETALK	5	/* Appletalk DDP.  */
++#define	PF_NETROM	6	/* Amateur radio NetROM.  */
++#define	PF_BRIDGE	7	/* Multiprotocol bridge.  */
++#define	PF_ATMPVC	8	/* ATM PVCs.  */
++#define	PF_X25		9	/* Reserved for X.25 project.  */
++#define	PF_INET6	10	/* IP version 6.  */
++#define	PF_ROSE		11	/* Amateur Radio X.25 PLP.  */
++#define	PF_DECnet	12	/* Reserved for DECnet project.  */
++#define	PF_NETBEUI	13	/* Reserved for 802.2LLC project.  */
++#define	PF_SECURITY	14	/* Security callback pseudo AF.  */
++#define	PF_KEY		15	/* PF_KEY key management API.  */
++#define	PF_NETLINK	16
++#define	PF_ROUTE	PF_NETLINK /* Alias to emulate 4.4BSD.  */
++#define	PF_PACKET	17	/* Packet family.  */
++#define	PF_ASH		18	/* Ash.  */
++#define	PF_ECONET	19	/* Acorn Econet.  */
++#define	PF_ATMSVC	20	/* ATM SVCs.  */
++#define	PF_SNA		22	/* Linux SNA Project */
++#define	PF_IRDA		23	/* IRDA sockets.  */
++#define	PF_PPPOX	24	/* PPPoX sockets.  */
++#define	PF_WANPIPE	25	/* Wanpipe API sockets.  */
++#define	PF_BLUETOOTH	31	/* Bluetooth sockets.  */
++#define	PF_MAX		32	/* For now..  */
++
++/* Address families.  */
++#define	AF_UNSPEC	PF_UNSPEC
++#define	AF_LOCAL	PF_LOCAL
++#define	AF_UNIX		PF_UNIX
++#define	AF_FILE		PF_FILE
++#define	AF_INET		PF_INET
++#define	AF_AX25		PF_AX25
++#define	AF_IPX		PF_IPX
++#define	AF_APPLETALK	PF_APPLETALK
++#define	AF_NETROM	PF_NETROM
++#define	AF_BRIDGE	PF_BRIDGE
++#define	AF_ATMPVC	PF_ATMPVC
++#define	AF_X25		PF_X25
++#define	AF_INET6	PF_INET6
++#define	AF_ROSE		PF_ROSE
++#define	AF_DECnet	PF_DECnet
++#define	AF_NETBEUI	PF_NETBEUI
++#define	AF_SECURITY	PF_SECURITY
++#define	AF_KEY		PF_KEY
++#define	AF_NETLINK	PF_NETLINK
++#define	AF_ROUTE	PF_ROUTE
++#define	AF_PACKET	PF_PACKET
++#define	AF_ASH		PF_ASH
++#define	AF_ECONET	PF_ECONET
++#define	AF_ATMSVC	PF_ATMSVC
++#define	AF_SNA		PF_SNA
++#define	AF_IRDA		PF_IRDA
++#define	AF_PPPOX	PF_PPPOX
++#define	AF_WANPIPE	PF_WANPIPE
++#define	AF_BLUETOOTH	PF_BLUETOOTH
++#define	AF_MAX		PF_MAX
++
++/*
++ * Structure used by kernel to store most
++ * addresses.
++ */
++struct sockaddr {
++	sa_family_t	sa_family;	/* address family */
++	char		sa_data[14];	/* actually longer; address value */
++};
++#define	SOCK_MAXADDRLEN	255		/* longest possible addresses */
++
++/*
++ * RFC 2553: protocol-independent placeholder for socket addresses
++ */
++#define	_SS_MAXSIZE	128U
++#define	_SS_ALIGNSIZE	(sizeof(int64_t))
++#define	_SS_PAD1SIZE	(_SS_ALIGNSIZE - sizeof(unsigned char) - sizeof(sa_family_t))
++#define	_SS_PAD2SIZE	(_SS_MAXSIZE - sizeof(unsigned char) - sizeof(sa_family_t) - \
++				_SS_PAD1SIZE - _SS_ALIGNSIZE)
++
++struct sockaddr_storage {
++	unsigned char		ss_len;		/* address length */
++	sa_family_t	ss_family;	/* address family */
++	char		__ss_pad1[_SS_PAD1SIZE];
++	int64_t		__ss_align;	/* force desired structure storage alignment */
++	char		__ss_pad2[_SS_PAD2SIZE];
++};
++
++#endif /* !_NEWLIB_SYS_SOCKET_H_ */
+diff --git a/src/external/include/newlib/netinet/icmp6.h b/src/external/include/newlib/netinet/icmp6.h
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/external/include/newlib/netinet/in.h b/src/external/include/newlib/netinet/in.h
+new file mode 100644
+index 0000000..e87c164
+--- /dev/null
++++ b/src/external/include/newlib/netinet/in.h
+@@ -0,0 +1,88 @@
++/*
++ * Copyright (c) 1982, 1986, 1990, 1993
++ *	The Regents of the University of California.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ *
++ *	@(#)in.h	8.3 (Berkeley) 1/3/94
++ * $FreeBSD: src/sys/netinet/in.h,v 1.68 2002/04/24 01:26:11 mike Exp $
++ */
++
++#ifndef _NEWLIB_NETINET_IN_H_
++#define _NEWLIB_NETINET_IN_H_
++
++#include <sys/cdefs.h>
++//#include <sys/config.h>
++//#include <sys/_types.h>
++//#include <machine/endian.h>
++#include <newlib/endian.h>
++
++/* Protocols common to RFC 1700, POSIX, and X/Open. */
++#define	IPPROTO_IP		0		/* dummy for IP */
++#define	IPPROTO_ICMP		1		/* control message protocol */
++#define	IPPROTO_TCP		6		/* tcp */
++#define	IPPROTO_UDP		17		/* user datagram protocol */
++
++#define	INADDR_ANY		(u_int32_t)0x00000000
++#define	INADDR_BROADCAST	(u_int32_t)0xffffffff	/* must be masked */
++
++#ifndef _IN_ADDR_T_DECLARED
++typedef	uint32_t		in_addr_t;
++#define	_IN_ADDR_T_DECLARED
++#endif
++
++#ifndef _IN_PORT_T_DECLARED
++typedef	uint16_t		in_port_t;
++#define	_IN_PORT_T_DECLARED
++#endif
++
++typedef unsigned short sa_family_t;
++
++/* Internet address (a structure for historical reasons). */
++#ifndef	_STRUCT_IN_ADDR_DECLARED
++struct in_addr {
++	in_addr_t s_addr;
++};
++#define	_STRUCT_IN_ADDR_DECLARED
++#endif
++
++/* Socket address, internet style. */
++struct sockaddr_in {
++	sa_family_t	sin_family;
++	in_port_t	sin_port;
++	struct	in_addr sin_addr;
++	char	sin_zero[8];
++};
++
++//#if __POSIX_VISIBLE >= 200112
++#define	IPPROTO_RAW		255		/* raw IP packet */
++#define	INET_ADDRSTRLEN		16
++
++/* INET6 stuff */
++#define	__NEWLIB_KAME_NETINET_IN_H_INCLUDED_
++#include <newlib/netinet6/in6.h>
++#undef __NEWLIB_KAME_NETINET_IN_H_INCLUDED_
++
++#endif /* !_NEWLIB_NETINET_IN_H_*/
+diff --git a/src/external/include/newlib/netinet/ip.h b/src/external/include/newlib/netinet/ip.h
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/external/include/newlib/netinet/ip6.h b/src/external/include/newlib/netinet/ip6.h
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/external/include/newlib/netinet/ip_icmp.h b/src/external/include/newlib/netinet/ip_icmp.h
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/external/include/newlib/netinet/tcp.h b/src/external/include/newlib/netinet/tcp.h
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/external/include/newlib/netinet/udp.h b/src/external/include/newlib/netinet/udp.h
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/external/include/newlib/netinet6/in6.h b/src/external/include/newlib/netinet6/in6.h
+new file mode 100644
+index 0000000..082a7e2
+--- /dev/null
++++ b/src/external/include/newlib/netinet6/in6.h
+@@ -0,0 +1,273 @@
++/*	$FreeBSD: src/sys/netinet6/in6.h,v 1.19 2002/04/19 04:46:22 suz Exp $	*/
++/*	$KAME: in6.h,v 1.89 2001/05/27 13:28:35 itojun Exp $	*/
++
++/*
++ * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. Neither the name of the project nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE PROJECT OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++/*
++ * Copyright (c) 1982, 1986, 1990, 1993
++ *	The Regents of the University of California.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ *
++ *	@(#)in.h	8.3 (Berkeley) 1/3/94
++ */
++
++#ifndef __NEWLIB_KAME_NETINET_IN_H_INCLUDED_
++#error "do not include netinet6/in6.h directly, include netinet/in.h.  see RFC2553"
++#endif
++
++#ifndef _NEWLIB_NETINET6_IN6_H_
++#define _NEWLIB_NETINET6_IN6_H_
++
++#include <sys/types.h>
++
++/*
++ * Identification of the network protocol stack
++ * for *BSD-current/release: http://www.kame.net/dev/cvsweb.cgi/kame/COVERAGE
++ * has the table of implementation/integration differences.
++ */
++#define __KAME__
++#define __KAME_VERSION		"20010528/FreeBSD"
++
++/*
++ * Local port number conventions:
++ *
++ * Ports < IPPORT_RESERVED are reserved for privileged processes (e.g. root),
++ * unless a kernel is compiled with IPNOPRIVPORTS defined.
++ *
++ * When a user does a bind(2) or connect(2) with a port number of zero,
++ * a non-conflicting local port address is chosen.
++ *
++ * The default range is IPPORT_ANONMIN to IPPORT_ANONMAX, although
++ * that is settable by sysctl(3); net.inet.ip.anonportmin and
++ * net.inet.ip.anonportmax respectively.
++ *
++ * A user may set the IPPROTO_IP option IP_PORTRANGE to change this
++ * default assignment range.
++ *
++ * The value IP_PORTRANGE_DEFAULT causes the default behavior.
++ *
++ * The value IP_PORTRANGE_HIGH is the same as IP_PORTRANGE_DEFAULT,
++ * and exists only for FreeBSD compatibility purposes.
++ *
++ * The value IP_PORTRANGE_LOW changes the range to the "low" are
++ * that is (by convention) restricted to privileged processes.
++ * This convention is based on "vouchsafe" principles only.
++ * It is only secure if you trust the remote host to restrict these ports.
++ * The range is IPPORT_RESERVEDMIN to IPPORT_RESERVEDMAX.
++ */
++
++#define	IPV6PORT_RESERVED	1024
++#define	IPV6PORT_ANONMIN	49152
++#define	IPV6PORT_ANONMAX	65535
++#define	IPV6PORT_RESERVEDMIN	600
++#define	IPV6PORT_RESERVEDMAX	(IPV6PORT_RESERVED-1)
++
++/*
++ * IPv6 address
++ */
++struct in6_addr {
++	union {
++		uint8_t   __u6_addr8[16];
++		uint16_t  __u6_addr16[8];
++		uint32_t  __u6_addr32[4];
++	} __u6_addr;			/* 128-bit IP6 address */
++};
++
++#define s6_addr   __u6_addr.__u6_addr8
++
++#define INET6_ADDRSTRLEN	46
++
++/*
++ * Socket address for IPv6
++ */
++#ifndef _XOPEN_SOURCE
++#define SIN6_LEN
++#endif
++struct sockaddr_in6 {
++	uint8_t	sin6_family;	/* AF_INET6 (sa_family_t) */
++	uint16_t	sin6_port;	/* Transport layer port # (in_port_t)*/
++	uint32_t	sin6_flowinfo;	/* IP6 flow information */
++	struct in6_addr	sin6_addr;	/* IP6 address */
++	uint32_t	sin6_scope_id;	/* scope zone index */
++};
++
++/*
++ * Macros started with IPV6_ADDR is KAME local
++ */
++#if BYTE_ORDER == LITTLE_ENDIAN
++#define IPV6_ADDR_INT32_ONE	0x01000000
++#define IPV6_ADDR_INT32_TWO	0x02000000
++#define IPV6_ADDR_INT32_MNL	0x000001ff
++#define IPV6_ADDR_INT32_MLL	0x000002ff
++#define IPV6_ADDR_INT32_SMP	0xffff0000
++#define IPV6_ADDR_INT16_ULL	0x80fe
++#define IPV6_ADDR_INT16_USL	0xc0fe
++#define IPV6_ADDR_INT16_MLL	0x02ff
++#endif
++
++/*
++ * Definition of some useful macros to handle IP6 addresses
++ */
++#define IN6ADDR_ANY_INIT \
++	{{{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }}}
++#define IN6ADDR_LOOPBACK_INIT \
++	{{{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 }}}
++#define IN6ADDR_NODELOCAL_ALLNODES_INIT \
++	{{{ 0xff, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 }}}
++#define IN6ADDR_LINKLOCAL_ALLNODES_INIT \
++	{{{ 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 }}}
++#define IN6ADDR_LINKLOCAL_ALLROUTERS_INIT \
++	{{{ 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 }}}
++
++extern const struct in6_addr in6addr_any;
++extern const struct in6_addr in6addr_loopback;
++extern const struct in6_addr in6addr_nodelocal_allnodes;
++extern const struct in6_addr in6addr_linklocal_allnodes;
++extern const struct in6_addr in6addr_linklocal_allrouters;
++
++/*
++ * Equality
++ * NOTE: Some of kernel programming environment (for example, openbsd/sparc)
++ * does not supply memcmp().  For userland memcmp() is preferred as it is
++ * in ANSI standard.
++ */
++#define IN6_ARE_ADDR_EQUAL(a, b)			\
++    (memcmp(&(a)->s6_addr[0], &(b)->s6_addr[0], sizeof(struct in6_addr)) == 0)
++
++/*
++ * Unspecified
++ */
++#define IN6_IS_ADDR_UNSPECIFIED(a)	\
++	((*(const uint32_t *)(const void *)(&(a)->s6_addr[0]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[4]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[8]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[12]) == 0))
++
++/*
++ * Loopback
++ */
++#define IN6_IS_ADDR_LOOPBACK(a)		\
++	((*(const uint32_t *)(const void *)(&(a)->s6_addr[0]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[4]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[8]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[12]) == ntohl(1)))
++
++/*
++ * IPv4 compatible
++ */
++#define IN6_IS_ADDR_V4COMPAT(a)		\
++	((*(const uint32_t *)(const void *)(&(a)->s6_addr[0]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[4]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[8]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[12]) != 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[12]) != ntohl(1)))
++
++/*
++ * Mapped
++ */
++#define IN6_IS_ADDR_V4MAPPED(a)		      \
++	((*(const uint32_t *)(const void *)(&(a)->s6_addr[0]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[4]) == 0) &&	\
++	 (*(const uint32_t *)(const void *)(&(a)->s6_addr[8]) == ntohl(0x0000ffff)))
++
++/*
++ * KAME Scope Values
++ */
++
++#define __IPV6_ADDR_SCOPE_NODELOCAL	0x01
++#define __IPV6_ADDR_SCOPE_LINKLOCAL	0x02
++#define __IPV6_ADDR_SCOPE_SITELOCAL	0x05
++#define __IPV6_ADDR_SCOPE_ORGLOCAL	0x08	/* just used in this file */
++#define __IPV6_ADDR_SCOPE_GLOBAL	0x0e
++
++/*
++ * Unicast Scope
++ * Note that we must check topmost 10 bits only, not 16 bits (see RFC2373).
++ */
++#define IN6_IS_ADDR_LINKLOCAL(a)	\
++	(((a)->s6_addr[0] == 0xfe) && (((a)->s6_addr[1] & 0xc0) == 0x80))
++#define IN6_IS_ADDR_SITELOCAL(a)	\
++	(((a)->s6_addr[0] == 0xfe) && (((a)->s6_addr[1] & 0xc0) == 0xc0))
++
++/*
++ * Multicast
++ */
++#define IN6_IS_ADDR_MULTICAST(a)	((a)->s6_addr[0] == 0xff)
++
++#define __IPV6_ADDR_MC_SCOPE(a)		((a)->s6_addr[1] & 0x0f)
++
++/*
++ * Multicast Scope
++ */
++#define IN6_IS_ADDR_MC_NODELOCAL(a)	\
++	(IN6_IS_ADDR_MULTICAST(a) &&	\
++	 (__IPV6_ADDR_MC_SCOPE(a) == __IPV6_ADDR_SCOPE_NODELOCAL))
++#define IN6_IS_ADDR_MC_LINKLOCAL(a)	\
++	(IN6_IS_ADDR_MULTICAST(a) &&	\
++	 (__IPV6_ADDR_MC_SCOPE(a) == __IPV6_ADDR_SCOPE_LINKLOCAL))
++#define IN6_IS_ADDR_MC_SITELOCAL(a)	\
++	(IN6_IS_ADDR_MULTICAST(a) && 	\
++	 (__IPV6_ADDR_MC_SCOPE(a) == __IPV6_ADDR_SCOPE_SITELOCAL))
++#define IN6_IS_ADDR_MC_ORGLOCAL(a)	\
++	(IN6_IS_ADDR_MULTICAST(a) &&	\
++	 (__IPV6_ADDR_MC_SCOPE(a) == __IPV6_ADDR_SCOPE_ORGLOCAL))
++#define IN6_IS_ADDR_MC_GLOBAL(a)	\
++	(IN6_IS_ADDR_MULTICAST(a) &&	\
++	 (__IPV6_ADDR_MC_SCOPE(a) == __IPV6_ADDR_SCOPE_GLOBAL))
++
++#endif /* !_NEWLIB_NETINET6_IN6_H_ */
+diff --git a/src/external/include/newlib/stdlib.h b/src/external/include/newlib/stdlib.h
+new file mode 100644
+index 0000000..c54753d
+--- /dev/null
++++ b/src/external/include/newlib/stdlib.h
+@@ -0,0 +1,29 @@
++/*
++ * stdlib.h
++ *
++ * Definitions for common types, variables, and functions.
++ */
++
++#ifndef _NEWLIB_STDLIB_H_
++#define _NEWLIB_STDLIB_H_
++
++#define __need_size_t
++#define __need_wchar_t
++#define __need_NULL
++#include <stddef.h>
++
++#include <sys/cdefs.h>
++
++#ifndef _BEGIN_STD_C
++#define _BEGIN_STD_C
++#endif
++#ifndef _END_STD_C
++#define _END_STD_C
++#endif
++
++_BEGIN_STD_C
++int	atoi (const char *__nptr);
++long	strtol (const char *__restrict __n, char **__restrict __end_PTR, int __base);
++_END_STD_C
++
++#endif /* _NEWLIB_STDLIB_H_ */
+diff --git a/src/external/include/newlib/strings.h b/src/external/include/newlib/strings.h
+new file mode 100644
+index 0000000..82718f7
+--- /dev/null
++++ b/src/external/include/newlib/strings.h
+@@ -0,0 +1,41 @@
++/*-
++ * Copyright (c) 2002 Mike Barcroft <mike@FreeBSD.org>
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ *
++ * $FreeBSD: head/include/strings.h 272673 2014-10-07 04:54:11Z delphij $
++ */
++
++#ifndef _NEWLIB_STRINGS_H_
++#define	_NEWLIB_STRINGS_H_
++
++#ifndef __pure
++#define __pure
++#endif
++
++__BEGIN_DECLS
++int	 strcasecmp(const char *s1, const char *s2);
++int  ffs(int) __pure;
++__END_DECLS
++
++#endif /* _NEWLIB_STRINGS_H_ */
+diff --git a/src/external/src/newlib/atoi.c b/src/external/src/newlib/atoi.c
+new file mode 100644
+index 0000000..db2a5f8
+--- /dev/null
++++ b/src/external/src/newlib/atoi.c
+@@ -0,0 +1,53 @@
++/*
++FUNCTION
++   <<atoi>>, <<atol>>---string to integer
++
++INDEX
++	atoi
++INDEX
++	atol
++INDEX
++	_atoi_r
++INDEX
++	_atol_r
++
++SYNOPSIS
++	#include <stdlib.h>
++        int atoi(const char *<[s]>);
++	long atol(const char *<[s]>);
++        int _atoi_r(struct _reent *<[ptr]>, const char *<[s]>);
++        long _atol_r(struct _reent *<[ptr]>, const char *<[s]>);
++
++DESCRIPTION
++   <<atoi>> converts the initial portion of a string to an <<int>>.
++   <<atol>> converts the initial portion of a string to a <<long>>.
++
++   <<atoi(s)>> is implemented as <<(int)strtol(s, NULL, 10).>>
++   <<atol(s)>> is implemented as <<strtol(s, NULL, 10).>>
++
++   <<_atoi_r>> and <<_atol_r>> are reentrant versions of <<atoi>> and
++   <<atol>> respectively, passing the reentrancy struct pointer.
++
++RETURNS
++   The functions return the converted value, if any. If no conversion was
++   made, <<0>> is returned.
++
++PORTABILITY
++<<atoi>>, <<atol>> are ANSI.
++
++No supporting OS subroutines are required.
++*/
++
++/*
++ * Andy Wilson, 2-Oct-89.
++ */
++
++#include <newlib/stdlib.h>
++
++#ifndef _REENT_ONLY
++int
++atoi (const char *s)
++{
++  return (int) strtol (s, NULL, 10);
++}
++#endif /* !_REENT_ONLY */
+diff --git a/src/external/src/newlib/ffs.c b/src/external/src/newlib/ffs.c
+new file mode 100644
+index 0000000..8b6a9e2
+--- /dev/null
++++ b/src/external/src/newlib/ffs.c
+@@ -0,0 +1,32 @@
++/*
++FUNCTION
++	<<ffs>>---find first bit set in a word
++
++INDEX
++	ffs
++
++SYNOPSIS
++	#include <strings.h>
++	int ffs(int <[word]>);
++
++DESCRIPTION
++
++<<ffs>> returns the first bit set in a word.
++
++RETURNS
++<<ffs>> returns 0 if <[c]> is 0, 1 if <[c]> is odd, 2 if <[c]> is a multiple of
++2, etc.
++
++PORTABILITY
++<<ffs>> is not ANSI C.
++
++No supporting OS subroutines are required.  */
++
++#include <newlib/strings.h>
++
++int
++ffs(int i)
++{
++
++	return (__builtin_ffs(i));
++}
+diff --git a/src/external/src/newlib/inet_pton.c b/src/external/src/newlib/inet_pton.c
+new file mode 100644
+index 0000000..8f792ff
+--- /dev/null
++++ b/src/external/src/newlib/inet_pton.c
+@@ -0,0 +1,207 @@
++/*	$KAME: inet_pton.c,v 1.5 2001/08/20 02:32:40 itojun Exp $	*/
++
++/* Copyright (c) 1996 by Internet Software Consortium.
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND INTERNET SOFTWARE CONSORTIUM DISCLAIMS
++ * ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL INTERNET SOFTWARE
++ * CONSORTIUM BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
++ * DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
++ * PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
++ * ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
++ * SOFTWARE.
++ */
++
++#include <sys/types.h>
++#include <newlib/linux/sys/socket.h>
++#include <newlib/netinet/in.h>
++#include <newlib/arpa/inet.h>
++#include <newlib/arpa/nameser.h>
++#include <string.h>
++//#include <errno.h>
++
++#define u_char unsigned char
++#define u_int unsigned int
++
++/*
++ * WARNING: Don't even consider trying to compile this on a system where
++ * sizeof(int) < 4.  sizeof(int) > 4 is fine; all the world's not a VAX.
++ */
++
++static int	inet_pton4(const char *src, u_char *dst);
++static int	inet_pton6(const char *src, u_char *dst);
++
++/* int
++ * inet_pton(af, src, dst)
++ *	convert from presentation format (which usually means ASCII printable)
++ *	to network format (which is usually some kind of binary format).
++ * return:
++ *	1 if the address was valid for the specified address family
++ *	0 if the address wasn't valid (`dst' is untouched in this case)
++ *	-1 if some other error occurred (`dst' is untouched in this case, too)
++ * author:
++ *	Paul Vixie, 1996.
++ */
++int
++inet_pton(int af, const char *src, void *dst)
++{
++	switch (af) {
++	case AF_INET:
++		return (inet_pton4(src, dst));
++	case AF_INET6:
++		return (inet_pton6(src, dst));
++	default:
++		//errno = EAFNOSUPPORT;
++		return (-1);
++	}
++	/* NOTREACHED */
++}
++
++/* int
++ * inet_pton4(src, dst)
++ *	like inet_aton() but without all the hexadecimal and shorthand.
++ * return:
++ *	1 if `src' is a valid dotted quad, else 0.
++ * notice:
++ *	does not touch `dst' unless it's returning 1.
++ * author:
++ *	Paul Vixie, 1996.
++ */
++static int
++inet_pton4(const char *src, u_char *dst)
++{
++	static const char digits[] = "0123456789";
++	int saw_digit, octets, ch;
++	u_char tmp[NS_INADDRSZ], *tp;
++
++	saw_digit = 0;
++	octets = 0;
++	*(tp = tmp) = 0;
++	while ((ch = *src++) != '\0') {
++		const char *pch;
++
++		if ((pch = strchr(digits, ch)) != NULL) {
++			u_int new = *tp * 10 + (pch - digits);
++
++			if (new > 255)
++				return (0);
++			*tp = new;
++			if (! saw_digit) {
++				if (++octets > 4)
++					return (0);
++				saw_digit = 1;
++			}
++		} else if (ch == '.' && saw_digit) {
++			if (octets == 4)
++				return (0);
++			*++tp = 0;
++			saw_digit = 0;
++		} else
++			return (0);
++	}
++	if (octets < 4)
++		return (0);
++
++	memcpy(dst, tmp, NS_INADDRSZ);
++	return (1);
++}
++
++/* int
++ * inet_pton6(src, dst)
++ *	convert presentation level address to network order binary form.
++ * return:
++ *	1 if `src' is a valid [RFC1884 2.2] address, else 0.
++ * notice:
++ *	(1) does not touch `dst' unless it's returning 1.
++ *	(2) :: in a full address is silently ignored.
++ * credit:
++ *	inspired by Mark Andrews.
++ * author:
++ *	Paul Vixie, 1996.
++ */
++static int
++inet_pton6(const char *src, u_char *dst)
++{
++	static const char xdigits_l[] = "0123456789abcdef",
++			  xdigits_u[] = "0123456789ABCDEF";
++	u_char tmp[NS_IN6ADDRSZ], *tp, *endp, *colonp;
++	const char *xdigits, *curtok;
++	int ch, saw_xdigit;
++	u_int val;
++
++	memset((tp = tmp), '\0', NS_IN6ADDRSZ);
++	endp = tp + NS_IN6ADDRSZ;
++	colonp = NULL;
++	/* Leading :: requires some special handling. */
++	if (*src == ':')
++		if (*++src != ':')
++			return (0);
++	curtok = src;
++	saw_xdigit = 0;
++	val = 0;
++	while ((ch = *src++) != '\0') {
++		const char *pch;
++
++		if ((pch = strchr((xdigits = xdigits_l), ch)) == NULL)
++			pch = strchr((xdigits = xdigits_u), ch);
++		if (pch != NULL) {
++			val <<= 4;
++			val |= (pch - xdigits);
++			if (val > 0xffff)
++				return (0);
++			saw_xdigit = 1;
++			continue;
++		}
++		if (ch == ':') {
++			curtok = src;
++			if (!saw_xdigit) {
++				if (colonp)
++					return (0);
++				colonp = tp;
++				continue;
++			}
++			if (tp + NS_INT16SZ > endp)
++				return (0);
++			*tp++ = (u_char) (val >> 8) & 0xff;
++			*tp++ = (u_char) val & 0xff;
++			saw_xdigit = 0;
++			val = 0;
++			continue;
++		}
++		if (ch == '.' && ((tp + NS_INADDRSZ) <= endp) &&
++		    inet_pton4(curtok, tp) > 0) {
++			tp += NS_INADDRSZ;
++			saw_xdigit = 0;
++			break;	/* '\0' was seen by inet_pton4(). */
++		}
++		return (0);
++	}
++	if (saw_xdigit) {
++		if (tp + NS_INT16SZ > endp)
++			return (0);
++		*tp++ = (u_char) (val >> 8) & 0xff;
++		*tp++ = (u_char) val & 0xff;
++	}
++	if (colonp != NULL) {
++		/*
++		 * Since some memmove()'s erroneously fail to handle
++		 * overlapping regions, we'll do the shift by hand.
++		 */
++		const int n = tp - colonp;
++		int i;
++
++		for (i = 1; i <= n; i++) {
++			endp[- i] = colonp[n - i];
++			colonp[n - i] = 0;
++		}
++		tp = endp;
++	}
++	if (tp != endp)
++		return (0);
++	memcpy(dst, tmp, NS_IN6ADDRSZ);
++	return (1);
++}
+diff --git a/src/external/src/newlib/strtol.c b/src/external/src/newlib/strtol.c
+new file mode 100644
+index 0000000..b958405
+--- /dev/null
++++ b/src/external/src/newlib/strtol.c
+@@ -0,0 +1,216 @@
++/*
++FUNCTION
++   <<strtol>>, <<strtol_l>>---string to long
++
++INDEX
++	strtol
++
++INDEX
++	strtol_l
++
++SYNOPSIS
++	#include <stdlib.h>
++        long strtol(const char *restrict <[s]>, char **restrict <[ptr]>,
++		    int <[base]>);
++
++	#include <stdlib.h>
++        long strtol_l(const char *restrict <[s]>, char **restrict <[ptr]>,
++		      int <[base]>);
++
++DESCRIPTION
++The function <<strtol>> converts the string <<*<[s]>>> to
++a <<long>>. First, it breaks down the string into three parts:
++leading whitespace, which is ignored; a subject string consisting
++of characters resembling an integer in the radix specified by <[base]>;
++and a trailing portion consisting of zero or more unparseable characters,
++and always including the terminating null character. Then, it attempts
++to convert the subject string into a <<long>> and returns the
++result.
++
++If the value of <[base]> is 0, the subject string is expected to look
++like a normal C integer constant: an optional sign, a possible `<<0x>>'
++indicating a hexadecimal base, and a number. If <[base]> is between
++2 and 36, the expected form of the subject is a sequence of letters
++and digits representing an integer in the radix specified by <[base]>,
++with an optional plus or minus sign. The letters <<a>>--<<z>> (or,
++equivalently, <<A>>--<<Z>>) are used to signify values from 10 to 35;
++only letters whose ascribed values are less than <[base]> are
++permitted. If <[base]> is 16, a leading <<0x>> is permitted.
++
++The subject sequence is the longest initial sequence of the input
++string that has the expected form, starting with the first
++non-whitespace character.  If the string is empty or consists entirely
++of whitespace, or if the first non-whitespace character is not a
++permissible letter or digit, the subject string is empty.
++
++If the subject string is acceptable, and the value of <[base]> is zero,
++<<strtol>> attempts to determine the radix from the input string. A
++string with a leading <<0x>> is treated as a hexadecimal value; a string with
++a leading 0 and no <<x>> is treated as octal; all other strings are
++treated as decimal. If <[base]> is between 2 and 36, it is used as the
++conversion radix, as described above. If the subject string begins with
++a minus sign, the value is negated. Finally, a pointer to the first
++character past the converted subject string is stored in <[ptr]>, if
++<[ptr]> is not <<NULL>>.
++
++If the subject string is empty (or not in acceptable form), no conversion
++is performed and the value of <[s]> is stored in <[ptr]> (if <[ptr]> is
++not <<NULL>>).
++
++<<strtol_l>> is like <<strtol>> but performs the conversion based on the
++locale specified by the locale object locale.  If <[locale]> is
++LC_GLOBAL_LOCALE or not a valid locale object, the behaviour is undefined.
++
++The alternate function <<_strtol_r>> is a reentrant version.  The
++extra argument <[reent]> is a pointer to a reentrancy structure.
++
++RETURNS
++<<strtol>>, <<strtol_l>> return the converted value, if any. If no
++conversion was made, 0 is returned.
++
++<<strtol>>, <<strtol_l>> return <<LONG_MAX>> or <<LONG_MIN>> if the
++magnitude of the converted value is too large, and sets <<errno>>
++to <<ERANGE>>.
++
++PORTABILITY
++<<strtol>> is ANSI.
++<<strtol_l>> is a GNU extension.
++
++No supporting OS subroutines are required.
++*/
++
++/*-
++ * Copyright (c) 1990 The Regents of the University of California.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++#define _GNU_SOURCE
++#include <limits.h>
++#include <ctype.h>
++#include <newlib/stdlib.h>
++
++/*
++ * Convert a string to a long integer.
++ *
++ * Ignores `locale' stuff.  Assumes that the upper and lower case
++ * alphabets and digits are each contiguous.
++ */
++#ifndef _REENT_ONLY
++static long
++_strtol_l (const char *__restrict nptr,
++	   char **__restrict endptr, int base)
++{
++	register const unsigned char *s = (const unsigned char *)nptr;
++	register unsigned long acc;
++	register int c;
++	register unsigned long cutoff;
++	register int neg = 0, any, cutlim;
++
++	if (base < 0 || base == 1 || base > 36) {
++		//errno = EINVAL;
++		return 0;
++	}
++
++	/*
++	 * Skip white space and pick up leading +/- sign if any.
++	 * If base is 0, allow 0x for hex and 0 for octal, else
++	 * assume decimal; if base is already 16, allow 0x.
++	 */
++	do {
++		c = *s++;
++	} while (isspace(c));
++	if (c == '-') {
++		neg = 1;
++		c = *s++;
++	} else if (c == '+')
++		c = *s++;
++	if ((base == 0 || base == 16) &&
++	    c == '0' && (*s == 'x' || *s == 'X')) {
++		c = s[1];
++		s += 2;
++		base = 16;
++	}
++	if (base == 0)
++		base = c == '0' ? 8 : 10;
++
++	/*
++	 * Compute the cutoff value between legal numbers and illegal
++	 * numbers.  That is the largest legal value, divided by the
++	 * base.  An input number that is greater than this value, if
++	 * followed by a legal input character, is too big.  One that
++	 * is equal to this value may be valid or not; the limit
++	 * between valid and invalid numbers is then based on the last
++	 * digit.  For instance, if the range for longs is
++	 * [-2147483648..2147483647] and the input base is 10,
++	 * cutoff will be set to 214748364 and cutlim to either
++	 * 7 (neg==0) or 8 (neg==1), meaning that if we have accumulated
++	 * a value > 214748364, or equal but the next digit is > 7 (or 8),
++	 * the number is too big, and we will return a range error.
++	 *
++	 * Set any if any `digits' consumed; make it negative to indicate
++	 * overflow.
++	 */
++	cutoff = neg ? -(unsigned long)LONG_MIN : LONG_MAX;
++	cutlim = cutoff % (unsigned long)base;
++	cutoff /= (unsigned long)base;
++	for (acc = 0, any = 0;; c = *s++) {
++		if (c >= '0' && c <= '9')
++			c -= '0';
++		else if (c >= 'A' && c <= 'Z')
++			c -= 'A' - 10;
++		else if (c >= 'a' && c <= 'z')
++			c -= 'a' - 10;
++		else
++			break;
++		if (c >= base)
++			break;
++		if (any < 0 || acc > cutoff || (acc == cutoff && c > cutlim)) {
++			any = -1;
++		} else {
++			any = 1;
++			acc *= base;
++			acc += c;
++		}
++	}
++	if (any < 0) {
++		acc = neg ? LONG_MIN : LONG_MAX;
++		//rptr->_errno = ERANGE;
++	} else if (neg)
++		acc = -acc;
++	if (endptr != 0)
++		*endptr = (char *) (any ? (char *)s - 1 : nptr);
++	return (acc);
++}
++
++long
++strtol (const char *__restrict s,
++	char **__restrict ptr,
++	int base)
++{
++	return _strtol_l (s, ptr, base);
++}
++#endif
+diff --git a/src/lpm.c b/src/lpm.c
+index 34419ed..b1b503d 100644
+--- a/src/lpm.c
++++ b/src/lpm.c
+@@ -17,21 +17,29 @@
+  * With many IPv6 prefixes, the linear scan might become a bottleneck.
+  */
+ 
+-#include <sys/socket.h>
+-#include <arpa/inet.h>
++#include <newlib/linux/sys/socket.h>
++#include <newlib/arpa/inet.h>
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <newlib/stdlib.h>
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <inttypes.h>
+ #include <string.h>
+ #include <strings.h>
+-#include <errno.h>
++#include <newlib/strings.h> // ffs()
+ #include <assert.h>
+ 
+ #include "lpm.h"
+ 
++#ifdef TZR_TA_OPTEE
++#include <tee_api.h>
++#define malloc(size) 	TEE_Malloc(size, TEE_MALLOC_FILL_ZERO)
++#define free(ptr) 		TEE_Free(ptr)
++#define calloc(nmemb, size) TEE_Malloc(nmemb * size, TEE_MALLOC_FILL_ZERO)
++#endif /* !TZR_TA_OPTEE */
++
+ #define	LPM_MAX_PREFIX		(128)
+ #define	LPM_MAX_WORDS		(LPM_MAX_PREFIX >> 5)
+ #define	LPM_TO_WORDS(x)		((x) >> 2)
+diff --git a/src/sub.mk b/src/sub.mk
+new file mode 100644
+index 0000000..ea6e567
+--- /dev/null
++++ b/src/sub.mk
+@@ -0,0 +1,13 @@
++#global-incdirs-y += include
++
++incdirs-y += external/include
++
++srcs-y += lpm.c
++
++srcs-y += external/src/newlib/ffs.c
++srcs-y += external/src/newlib/inet_pton.c
++srcs-y += external/src/newlib/atoi.c
++srcs-y += external/src/newlib/strtol.c
++
++# To remove a certain compiler flag, add a line like this
++#cflags-template_ta.c-y += -Wno-strict-prototypes

@@ -1,0 +1,1712 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..1aee782
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,2 @@
++tzr-out/
++nw-out/
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..3256ab1
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,49 @@
++export V ?= 0
++
++OUTPUT_DIR := $(CURDIR)/tzr-out
++
++# If _HOST or _TA specific compilers are not specified, then use CROSS_COMPILE
++HOST_CROSS_COMPILE ?= $(CROSS_COMPILE)
++TA_CROSS_COMPILE ?= $(CROSS_COMPILE)
++
++.PHONY: all
++all: nvlist nvlist-tzr prepare-for-rootfs
++
++.PHONY: clean
++clean: nvlist-clean nvlist-tzr-clean prepare-for-rootfs-clean
++
++nvlist: CROSS_COMPILE="$(HOST_CROSS_COMPILE)"
++nvlist: export CC      ?= $(CROSS_COMPILE)gcc
++nvlist: export LD      ?= $(CROSS_COMPILE)ld
++nvlist: export AR      ?= $(CROSS_COMPILE)ar
++nvlist: export NM      ?= $(CROSS_COMPILE)nm
++nvlist: export OBJCOPY ?= $(CROSS_COMPILE)objcopy
++nvlist: export OBJDUMP ?= $(CROSS_COMPILE)objdump
++nvlist: export READELF ?= $(CROSS_COMPILE)readelf
++
++nvlist: export CFLAGS  += -Wall -I$(TEEC_EXPORT)/include \
++	-DTZR_PROXY
++nvlist: export LDFLAGS += -lteec -L$(TEEC_EXPORT)/lib
++
++nvlist:
++	$(MAKE) -C src LIBDIR=`pwd`/nw-out/ lib || exit -1;
++	$(MAKE) -C src LIBDIR=. DESTDIR=`pwd`/nw-out install || exit -1;
++
++nvlist-clean:
++	$(MAKE) -C src clean || exit -1;
++
++nvlist-tzr:
++	$(MAKE) -C src -f TZRMakefile CROSS_COMPILE="$(TA_CROSS_COMPILE)" LDFLAGS="" || exit -1;
++
++nvlist-tzr-clean:
++	$(MAKE) -C src -f TZRMakefile clean || exit -1;
++
++prepare-for-rootfs: nvlist-tzr
++	@echo "Copying example TLIB to $(OUTPUT_DIR)..."
++	@mkdir -p $(OUTPUT_DIR)
++	@mkdir -p $(OUTPUT_DIR)/tlib
++	cp -pr src/tzr-build/*.a $(OUTPUT_DIR)/tlib/; \
++
++prepare-for-rootfs-clean:
++	@rm -rf $(OUTPUT_DIR)/tlib
++	@rmdir --ignore-fail-on-non-empty $(OUTPUT_DIR) || test ! -e $(OUTPUT_DIR)
+diff --git a/src/.gitignore b/src/.gitignore
+new file mode 100644
+index 0000000..c88d149
+--- /dev/null
++++ b/src/.gitignore
+@@ -0,0 +1,7 @@
++.*.cmd
++.*.d
++*.a
++*.o
++*.lo
++*.la
++.libs/
+diff --git a/src/GNUmakefile b/src/GNUmakefile
+index dd37c6d..f835dad 100644
+--- a/src/GNUmakefile
++++ b/src/GNUmakefile
+@@ -57,10 +57,14 @@ obj: $(OBJS)
+ lib: $(LIB).la
+ 
+ %.lo: %.c
+-	libtool --mode=compile --tag CC $(CC) $(CFLAGS) -c $<
++	libtool --mode=compile --tag CC "$(CC)" $(CFLAGS) -c $<
+ 
+ $(LIB).la: $(shell echo $(OBJS) | sed 's/\.o/\.lo/g')
+-	libtool --mode=link --tag CC $(CC) $(LDFLAGS) -o $@ $(notdir $^)
++	# caution: CC=$(CC) prevents spacing bug when eval is called on it
++	# caution: libtool link-mode ignores the given compile command (`false' as dummy proof);
++	#		it hard-codes gcc use; patched it to use CC instead if CC is already pre-defined;
++	CC=$(CC) libtool --mode=link --tag CC false $(LDFLAGS) -o $@ $(notdir $^)
++	#toolchains/aarch64/bin/aarch64-linux-gnu-gcc -shared -fPIC -DPIC .libs/nvlist.o .libs/nvpair.o .libs/cnvlist.o .libs/dnvlist.o .libs/msgio.o   -lteec -L/home/fabian/Projects/optee-debian-hikey960/build/../optee_client/out/export/usr//lib -Wl,-soname -Wl,libnv.so.1 -o .libs/libnv.so.1.0.0
+ 
+ install/%.la: %.la
+ 	mkdir -p $(ILIBDIR)
+@@ -72,7 +76,7 @@ install: $(addprefix install/,$(LIB).la)
+ 	mkdir -p $(IMANDIR) && install -c $(MANS) $(IMANDIR)
+ 
+ %_test: $(OBJS)
+-	$(CC) $(CFLAGS) -I. $^ tests/$@.c -o $@ $(LDFLAGS)
++	"$(CC)" $(CFLAGS) -I. $^ tests/$@.c -o $@ $(LDFLAGS)
+ 
+ tests: $(TESTS)
+ 	@ for T in $(TESTS); do echo ./$$T; ./$$T; done | \
+diff --git a/src/TZRMakefile b/src/TZRMakefile
+new file mode 100644
+index 0000000..a64a847
+--- /dev/null
++++ b/src/TZRMakefile
+@@ -0,0 +1,50 @@
++CFG_TEE_TA_LOG_LEVEL ?= 4
++CPPFLAGS += -DCFG_TEE_TA_LOG_LEVEL=$(CFG_TEE_TA_LOG_LEVEL)
++
++# separate tzr object files into separate directory
++O=tzr-build
++
++# nvlist specific stuff -----
++# for the TA-side, i.e., secure world TA (todo: PTA)
++CFLAGS+=	-DTZR_OPTEE
++CPPFLAGS+=	-DTZR_OPTEE
++
++CFLAGS+=	-DTZR_TA_OPTEE
++CPPFLAGS+=	-DTZR_TA_OPTEE
++
++CFLAGS+=	-D__FBSDID\(x\)=
++CPPFLAGS+=	-D__FBSDID\(x\)=
++CFLAGS+=	-DNDEBUG
++CPPFLAGS+=	-DNDEBUG
++## disable msgio (socket apis)
++CFLAGS+=	-UWITH_MSGIO
++CPPFLAGS+=	-UWITH_MSGIO
++## disable fprintf() error logs
++CFLAGS+=	-UHAVE_PJDLOG
++CPPFLAGS+=	-UHAVE_PJDLOG
++
++##
++CFLAGS+=	-DENOMEM=\(12\)
++CFLAGS+=	-DEEXIST=\(17\)
++
++#INCS=		nv.h cnv.h dnv.h
++#OBJS=		nvlist.o nvpair.o cnvlist.o dnvlist.o
++
++## fixes -----
++### those are usually extern "C" { and }, but compiler complained about it
++CFLAGS+=	-D__BEGIN_DECLS=
++CFLAGS+=	-D__END_DECLS=
++
++## / -----
++# / -----
++
++# The name of the static library
++LIBNAME=$(O)/libnv-tzr
++
++-include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
++
++ifeq ($(wildcard $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk), )
++clean:
++	@echo 'Note: $$(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk not found, cannot clean TA'
++	@echo 'Note: TA_DEV_KIT_DIR=$(TA_DEV_KIT_DIR)'
++endif
+diff --git a/src/cnv.h b/src/cnv.h
+index 8d0dae6..ff89d15 100644
+--- a/src/cnv.h
++++ b/src/cnv.h
+@@ -33,12 +33,10 @@
+ 
+ #include <sys/cdefs.h>
+ 
+-#ifndef _KERNEL
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
+-#endif
+ 
+ #ifndef	_NVLIST_T_DECLARED
+ #define	_NVLIST_T_DECLARED
+@@ -47,7 +45,9 @@ struct nvlist;
+ typedef struct nvlist nvlist_t;
+ #endif
+ 
++#ifndef TZ_OPTEE
+ __BEGIN_DECLS
++#endif /* !TZ_OPTEE */
+ 
+ /*
+  * Functions which returns information about the given cookie.
+@@ -70,10 +70,8 @@ const bool		*cnvlist_get_bool_array(const void *cookie, size_t *nitemsp);
+ const uint64_t		*cnvlist_get_number_array(const void *cookie, size_t *nitemsp);
+ const char * const	*cnvlist_get_string_array(const void *cookie, size_t *nitemsp);
+ const nvlist_t * const	*cnvlist_get_nvlist_array(const void *cookie, size_t *nitemsp);
+-#ifndef _KERNEL
+ int			 cnvlist_get_descriptor(const void *cookie);
+ const int		*cnvlist_get_descriptor_array(const void *cookie, size_t *nitemsp);
+-#endif
+ 
+ 
+ /*
+@@ -91,10 +89,8 @@ bool			 *cnvlist_take_bool_array(void *cookie, size_t *nitemsp);
+ uint64_t		 *cnvlist_take_number_array(void *cookie, size_t *nitemsp);
+ char			**cnvlist_take_string_array(void *cookie, size_t *nitemsp);
+ nvlist_t		**cnvlist_take_nvlist_array(void *cookie, size_t *nitemsp);
+-#ifndef _KERNEL
+ int			  cnvlist_take_descriptor(void *cookie);
+ int			 *cnvlist_take_descriptor_array(void *cookie, size_t *nitemsp);
+-#endif
+ 
+ /*
+  * The cnvlist_free functions removes the given name/value pair from the nvlist based on cookie
+@@ -110,11 +106,11 @@ void	cnvlist_free_bool_array(void *cookie);
+ void	cnvlist_free_number_array(void *cookie);
+ void	cnvlist_free_string_array(void *cookie);
+ void	cnvlist_free_nvlist_array(void *cookie);
+-#ifndef _KERNEL
+ void	cnvlist_free_descriptor(void *cookie);
+ void	cnvlist_free_descriptor_array(void *cookie);
+-#endif
+ 
++#ifndef TZ_OPTEE
+ __END_DECLS
++#endif /* !TZ_OPTEE */
+ 
+ #endif	/* !_CNV_H_ */
+diff --git a/src/cnvlist.c b/src/cnvlist.c
+index d267ba7..94d0c79 100644
+--- a/src/cnvlist.c
++++ b/src/cnvlist.c
+@@ -31,22 +31,10 @@
+ #include <sys/cdefs.h>
+ __FBSDID("$FreeBSD: head/sys/contrib/libnv/cnvlist.c 335343 2018-06-18 21:26:58Z oshogbo $");
+ 
+-#ifdef _KERNEL
+-
+-#include <sys/types.h>
+-#include <sys/param.h>
+-#include <sys/kernel.h>
+-#include <sys/systm.h>
+-#include <sys/malloc.h>
+-
+-#include <machine/stdarg.h>
+-
+-#else
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdlib.h>
+-#endif
+ 
+ #include "cnv.h"
+ #include "nv.h"
+@@ -85,9 +73,7 @@ CNVLIST_GET(bool, bool, BOOL)
+ CNVLIST_GET(uint64_t, number, NUMBER)
+ CNVLIST_GET(const char *, string, STRING)
+ CNVLIST_GET(const nvlist_t *, nvlist, NVLIST)
+-#ifndef _KERNEL
+ CNVLIST_GET(int, descriptor, DESCRIPTOR)
+-#endif
+ 
+ #undef	CNVLIST_GET
+ 
+@@ -107,9 +93,7 @@ CNVLIST_GET_ARRAY(const bool *, bool_array, BOOL_ARRAY)
+ CNVLIST_GET_ARRAY(const uint64_t *, number_array, NUMBER_ARRAY)
+ CNVLIST_GET_ARRAY(const char * const *, string_array, STRING_ARRAY)
+ CNVLIST_GET_ARRAY(const nvlist_t * const *, nvlist_array, NVLIST_ARRAY)
+-#ifndef _KERNEL
+ CNVLIST_GET_ARRAY(const int *, descriptor_array, DESCRIPTOR_ARRAY)
+-#endif
+ 
+ #undef	CNVLIST_GET_ARRAY
+ 
+@@ -144,9 +128,7 @@ CNVLIST_TAKE(bool, bool, BOOL)
+ CNVLIST_TAKE(uint64_t, number, NUMBER)
+ CNVLIST_TAKE(char *, string, STRING)
+ CNVLIST_TAKE(nvlist_t *, nvlist, NVLIST)
+-#ifndef _KERNEL
+ CNVLIST_TAKE(int, descriptor, DESCRIPTOR)
+-#endif
+ 
+ #undef	CNVLIST_TAKE
+ 
+@@ -172,9 +154,7 @@ CNVLIST_TAKE_ARRAY(bool *, bool_array, BOOL_ARRAY)
+ CNVLIST_TAKE_ARRAY(uint64_t *, number_array, NUMBER_ARRAY)
+ CNVLIST_TAKE_ARRAY(char **, string_array, STRING_ARRAY)
+ CNVLIST_TAKE_ARRAY(nvlist_t **, nvlist_array, NVLIST_ARRAY)
+-#ifndef _KERNEL
+ CNVLIST_TAKE_ARRAY(int *, descriptor_array, DESCRIPTOR_ARRAY);
+-#endif
+ 
+ #undef	CNVLIST_TAKE_ARRAY
+ 
+@@ -211,9 +191,7 @@ CNVLIST_FREE(bool_array)
+ CNVLIST_FREE(number_array)
+ CNVLIST_FREE(string_array)
+ CNVLIST_FREE(nvlist_array)
+-#ifndef _KERNEL
+ CNVLIST_FREE(descriptor)
+ CNVLIST_FREE(descriptor_array)
+-#endif
+ 
+ #undef	CNVLIST_FREE
+diff --git a/src/common_impl.h b/src/common_impl.h
+index f3becb9..2e25ffb 100644
+--- a/src/common_impl.h
++++ b/src/common_impl.h
+@@ -34,15 +34,18 @@
+ #ifndef	_COMMON_IMPL_H_
+ #define	_COMMON_IMPL_H_
+ 
+-#include <errno.h>
++#ifndef NO_FD_APIS
+ #include <fcntl.h>
++#endif /* NO_FD_APIS */
+ #include <stdbool.h>
+ 
++#ifndef NO_FD_APIS
+ static inline bool
+ fd_is_valid(int fd)
+ {
+ 
+ 	return (fcntl(fd, F_GETFD) != -1 || errno != EBADF);
+ }
++#endif /* NO_FD_APIS */
+ 
+ #endif	/* !_COMMON_IMPL_H_ */
+diff --git a/src/dnv.h b/src/dnv.h
+index e88b00e..5037df9 100644
+--- a/src/dnv.h
++++ b/src/dnv.h
+@@ -34,12 +34,10 @@
+ 
+ #include <sys/cdefs.h>
+ 
+-#ifndef _KERNEL
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
+-#endif
+ 
+ #ifndef	_NVLIST_T_DECLARED
+ #define	_NVLIST_T_DECLARED
+@@ -48,7 +46,6 @@ struct nvlist;
+ typedef struct nvlist nvlist_t;
+ #endif
+ 
+-__BEGIN_DECLS
+ 
+ /*
+  * The dnvlist_get functions returns value associated with the given name.
+@@ -80,6 +77,5 @@ nvlist_t *dnvlist_take_nvlist(nvlist_t *nvl, const char *name, nvlist_t *defval)
+ int dnvlist_take_descriptor(nvlist_t *nvl, const char *name, int defval);
+ void *dnvlist_take_binary(nvlist_t *nvl, const char *name, size_t *sizep, void *defval, size_t defsize);
+ 
+-__END_DECLS
+ 
+ #endif	/* !_DNV_H_ */
+diff --git a/src/dnvlist.c b/src/dnvlist.c
+index 1360824..29e5d59 100644
+--- a/src/dnvlist.c
++++ b/src/dnvlist.c
+@@ -32,22 +32,12 @@
+ #include <sys/cdefs.h>
+ __FBSDID("$FreeBSD: head/sys/contrib/libnv/dnvlist.c 285139 2015-07-04 16:33:37Z oshogbo $");
+ 
+-#ifdef _KERNEL
++#define NO_FD_APIS
+ 
+-#include <sys/types.h>
+-#include <sys/param.h>
+-#include <sys/kernel.h>
+-#include <sys/systm.h>
+-#include <sys/malloc.h>
+-
+-#include <machine/stdarg.h>
+-
+-#else
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdlib.h>
+-#endif
+ 
+ #include "dnv.h"
+ #include "nv.h"
+@@ -69,7 +59,7 @@ DNVLIST_GET(bool, bool)
+ DNVLIST_GET(uint64_t, number)
+ DNVLIST_GET(const char *, string)
+ DNVLIST_GET(const nvlist_t *, nvlist)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ DNVLIST_GET(int, descriptor)
+ #endif
+ 
+@@ -106,7 +96,7 @@ DNVLIST_TAKE(bool, bool)
+ DNVLIST_TAKE(uint64_t, number)
+ DNVLIST_TAKE(char *, string)
+ DNVLIST_TAKE(nvlist_t *, nvlist)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ DNVLIST_TAKE(int, descriptor)
+ #endif
+ 
+diff --git a/src/external/INFO.md b/src/external/INFO.md
+new file mode 100644
+index 0000000..27ec599
+--- /dev/null
++++ b/src/external/INFO.md
+@@ -0,0 +1,7 @@
++## external includes
++
++taken from newlib (adapted):
++* endian.h
++* _endian.h
++* strings.h
++* strcasecmp.c
+diff --git a/src/external/include/newlib/_endian.h b/src/external/include/newlib/_endian.h
+new file mode 100644
+index 0000000..3b3c0ed
+--- /dev/null
++++ b/src/external/include/newlib/_endian.h
+@@ -0,0 +1,24 @@
++#ifndef __NEWLIB_MACHINE_ENDIAN_H__
++#error "must be included via <newlib/endian.h>"
++#endif /* !__NEWLIB_MACHINE_ENDIAN_H__ */
++
++#ifndef _LITTLE_ENDIAN
++#define	_LITTLE_ENDIAN	1234
++#endif
++
++#ifndef _BIG_ENDIAN
++#define	_BIG_ENDIAN	4321
++#endif
++
++#ifndef _PDP_ENDIAN
++#define	_PDP_ENDIAN	3412
++#endif
++
++#ifndef _BYTE_ORDER
++#if defined(__IEEE_BIG_ENDIAN) || defined(__IEEE_BYTES_BIG_ENDIAN)
++#define	_BYTE_ORDER	_BIG_ENDIAN
++#else
++#define	_BYTE_ORDER	_LITTLE_ENDIAN
++#endif
++
++#endif
+diff --git a/src/external/include/newlib/endian.h b/src/external/include/newlib/endian.h
+new file mode 100644
+index 0000000..3d3407b
+--- /dev/null
++++ b/src/external/include/newlib/endian.h
+@@ -0,0 +1,96 @@
++#ifndef __NEWLIB_MACHINE_ENDIAN_H__
++#define	__NEWLIB_MACHINE_ENDIAN_H__
++
++#include <newlib/_endian.h>
++
++#if _BYTE_ORDER == _LITTLE_ENDIAN
++#define	_QUAD_HIGHWORD	1
++#define	_QUAD_LOWWORD	0
++#else
++#define	_QUAD_HIGHWORD	0
++#define	_QUAD_LOWWORD	1
++#endif
++
++#define	LITTLE_ENDIAN	_LITTLE_ENDIAN
++#define	BIG_ENDIAN	_BIG_ENDIAN
++#define	PDP_ENDIAN	_PDP_ENDIAN
++#define	BYTE_ORDER	_BYTE_ORDER
++
++#ifdef __GNUC__
++#define	__bswap16(_x)	__builtin_bswap16(_x)
++#define	__bswap32(_x)	__builtin_bswap32(_x)
++#define	__bswap64(_x)	__builtin_bswap64(_x)
++#else /* __GNUC__ */
++static __inline __uint16_t
++__bswap16(__uint16_t _x)
++{
++
++	return ((__uint16_t)((_x >> 8) | ((_x << 8) & 0xff00)));
++}
++
++static __inline __uint32_t
++__bswap32(__uint32_t _x)
++{
++
++	return ((__uint32_t)((_x >> 24) | ((_x >> 8) & 0xff00) |
++	    ((_x << 8) & 0xff0000) | ((_x << 24) & 0xff000000)));
++}
++
++static __inline __uint64_t
++__bswap64(__uint64_t _x)
++{
++
++	return ((__uint64_t)((_x >> 56) | ((_x >> 40) & 0xff00) |
++	    ((_x >> 24) & 0xff0000) | ((_x >> 8) & 0xff000000) |
++	    ((_x << 8) & ((__uint64_t)0xff << 32)) |
++	    ((_x << 24) & ((__uint64_t)0xff << 40)) |
++	    ((_x << 40) & ((__uint64_t)0xff << 48)) | ((_x << 56))));
++}
++#endif /* !__GNUC__ */
++
++#if _BYTE_ORDER == _LITTLE_ENDIAN
++#define	htonl(_x)	__bswap32(_x)
++#define	htons(_x)	__bswap16(_x)
++#define	ntohl(_x)	__bswap32(_x)
++#define ntohs(_x)	__bswap16(_x)
++#else
++#define	htonl(_x)	((__uint32_t)(_x))
++#define	htons(_x)	((__uint16_t)(_x))
++#define	ntohl(_x)	((__uint32_t)(_x))
++#define ntohs(_x)	((__uint16_t)(_x))
++#endif
++
++#if _BYTE_ORDER == _LITTLE_ENDIAN
++#define htobe16(x) __bswap16 (x)
++#define htole16(x) (x)
++#define be16toh(x) __bswap16 (x)
++#define le16toh(x) (x)
++
++#define htobe32(x) __bswap32 (x)
++#define htole32(x) (x)
++#define be32toh(x) __bswap32 (x)
++#define le32toh(x) (x)
++
++#define htobe64(x) __bswap64 (x)
++#define htole64(x) (x)
++#define be64toh(x) __bswap64 (x)
++#define le64toh(x) (x)
++
++#else
++#define htobe16(x) (x)
++#define htole16(x) __bswap16 (x)
++#define be16toh(x) (x)
++#define le16toh(x) __bswap16 (x)
++
++#define htobe32(x) (x)
++#define htole32(x) __bswap32 (x)
++#define be32toh(x) (x)
++#define le32toh(x) __bswap32 (x)
++
++#define htobe64(x) (x)
++#define htole64(x) __bswap64 (x)
++#define be64toh(x) (x)
++#define le64toh(x) __bswap64 (x)
++#endif
++
++#endif /* __NEWLIB_MACHINE_ENDIAN_H__ */
+diff --git a/src/external/include/newlib/strings.h b/src/external/include/newlib/strings.h
+new file mode 100644
+index 0000000..4a1983d
+--- /dev/null
++++ b/src/external/include/newlib/strings.h
+@@ -0,0 +1,36 @@
++/*-
++ * Copyright (c) 2002 Mike Barcroft <mike@FreeBSD.org>
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ *
++ * $FreeBSD: head/include/strings.h 272673 2014-10-07 04:54:11Z delphij $
++ */
++
++#ifndef _STRINGS_H_
++#define	_STRINGS_H_
++
++__BEGIN_DECLS
++int	 strcasecmp(const char *s1, const char *s2);
++__END_DECLS
++
++#endif /* _STRINGS_H_ */
+diff --git a/src/external/src/newlib/strcasecmp.c b/src/external/src/newlib/strcasecmp.c
+new file mode 100644
+index 0000000..762d597
+--- /dev/null
++++ b/src/external/src/newlib/strcasecmp.c
+@@ -0,0 +1,51 @@
++/*
++FUNCTION
++	<<strcasecmp>>---case-insensitive character string compare
++	
++INDEX
++	strcasecmp
++
++SYNOPSIS
++	#include <strings.h>
++	int strcasecmp(const char *<[a]>, const char *<[b]>);
++
++DESCRIPTION
++	<<strcasecmp>> compares the string at <[a]> to
++	the string at <[b]> in a case-insensitive manner.
++
++RETURNS 
++
++	If <<*<[a]>>> sorts lexicographically after <<*<[b]>>> (after
++	both are converted to lowercase), <<strcasecmp>> returns a
++	number greater than zero.  If the two strings match,
++	<<strcasecmp>> returns zero.  If <<*<[a]>>> sorts
++	lexicographically before <<*<[b]>>>, <<strcasecmp>> returns a
++	number less than zero.
++
++PORTABILITY
++<<strcasecmp>> is in the Berkeley Software Distribution.
++
++<<strcasecmp>> requires no supporting OS subroutines. It uses
++tolower() from elsewhere in this library.
++
++QUICKREF
++	strcasecmp
++*/
++
++#include <newlib/strings.h>
++#include <ctype.h>
++
++int
++strcasecmp (const char *s1,
++	const char *s2)
++{
++  int d = 0;
++  for ( ; ; )
++    {
++      const int c1 = tolower(*s1++);
++      const int c2 = tolower(*s2++);
++      if (((d = c1 - c2) != 0) || (c2 == '\0'))
++        break;
++    }
++  return d;
++}
+diff --git a/src/msgio.c b/src/msgio.c
+index 9408e6e..14ba3ac 100644
+--- a/src/msgio.c
++++ b/src/msgio.c
+@@ -45,19 +45,14 @@ __FBSDID("$FreeBSD: head/lib/libnv/msgio.c 271578 2014-09-14 09:27:12Z pjd $");
+ #include <string.h>
+ #include <unistd.h>
+ 
+-#ifdef HAVE_PJDLOG
+-#include <pjdlog.h>
+-#endif
+ 
+ #include "common_impl.h"
+ #include "msgio.h"
+ 
+-#ifndef	HAVE_PJDLOG
+ #include <assert.h>
+ #define	PJDLOG_ASSERT(...)		assert(__VA_ARGS__)
+ #define	PJDLOG_RASSERT(expr, ...)	assert(expr)
+ #define	PJDLOG_ABORT(...)		abort()
+-#endif
+ 
+ #ifdef __linux__
+ /* Linux: arbitrary size, but must be lower than SCM_MAX_FD. */
+diff --git a/src/nv.h b/src/nv.h
+index f0bd37a..d786936 100644
+--- a/src/nv.h
++++ b/src/nv.h
+@@ -35,12 +35,10 @@
+ 
+ #include <sys/cdefs.h>
+ 
+-#ifndef _KERNEL
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
+-#endif
+ 
+ #ifndef	_NVLIST_T_DECLARED
+ #define	_NVLIST_T_DECLARED
+@@ -75,11 +73,7 @@ typedef struct nvlist nvlist_t;
+  */
+ #define	NV_FLAG_NO_UNIQUE		0x02
+ 
+-#if defined(_KERNEL) && defined(MALLOC_DECLARE)
+-MALLOC_DECLARE(M_NVLIST);
+-#endif
+ 
+-__BEGIN_DECLS
+ 
+ nvlist_t	*nvlist_create(int flags);
+ void		 nvlist_destroy(nvlist_t *nvl);
+@@ -90,18 +84,16 @@ void		 nvlist_set_error(nvlist_t *nvl, int error);
+ 
+ nvlist_t *nvlist_clone(const nvlist_t *nvl);
+ 
+-#ifndef _KERNEL
+ void nvlist_dump(const nvlist_t *nvl, int fd);
+ void nvlist_fdump(const nvlist_t *nvl, FILE *fp);
+-#endif
++
++void nvlist_dump_ta(const nvlist_t *nvl);
+ 
+ size_t		 nvlist_size(const nvlist_t *nvl);
+ void		*nvlist_pack(const nvlist_t *nvl, size_t *sizep);
+ nvlist_t	*nvlist_unpack(const void *buf, size_t size, int flags);
+ 
+-int nvlist_send(int sock, const nvlist_t *nvl);
+-nvlist_t *nvlist_recv(int sock, int flags);
+-nvlist_t *nvlist_xfer(int sock, nvlist_t *nvl, int flags);
++
+ 
+ const char *nvlist_next(const nvlist_t *nvl, int *typep, void **cookiep);
+ 
+@@ -130,10 +122,8 @@ bool nvlist_exists_bool_array(const nvlist_t *nvl, const char *name);
+ bool nvlist_exists_number_array(const nvlist_t *nvl, const char *name);
+ bool nvlist_exists_string_array(const nvlist_t *nvl, const char *name);
+ bool nvlist_exists_nvlist_array(const nvlist_t *nvl, const char *name);
+-#ifndef _KERNEL
+ bool nvlist_exists_descriptor(const nvlist_t *nvl, const char *name);
+ bool nvlist_exists_descriptor_array(const nvlist_t *nvl, const char *name);
+-#endif
+ 
+ /*
+  * The nvlist_add functions add the given name/value pair.
+@@ -155,18 +145,14 @@ void nvlist_add_bool_array(nvlist_t *nvl, const char *name, const bool *value, s
+ void nvlist_add_number_array(nvlist_t *nvl, const char *name, const uint64_t *value, size_t nitems);
+ void nvlist_add_string_array(nvlist_t *nvl, const char *name, const char * const *value, size_t nitems);
+ void nvlist_add_nvlist_array(nvlist_t *nvl, const char *name, const nvlist_t * const *value, size_t nitems);
+-#ifndef _KERNEL
+ void nvlist_add_descriptor(nvlist_t *nvl, const char *name, int value);
+ void nvlist_add_descriptor_array(nvlist_t *nvl, const char *name, const int *value, size_t nitems);
+-#endif
+ 
+ void nvlist_append_bool_array(nvlist_t *nvl, const char *name, const bool value);
+ void nvlist_append_number_array(nvlist_t *nvl, const char *name, const uint64_t value);
+ void nvlist_append_string_array(nvlist_t *nvl, const char *name, const char * const value);
+ void nvlist_append_nvlist_array(nvlist_t *nvl, const char *name, const nvlist_t * const value);
+-#ifndef _KERNEL
+ void nvlist_append_descriptor_array(nvlist_t *nvl, const char *name, int value);
+-#endif
+ 
+ /*
+  * The nvlist_move functions add the given name/value pair.
+@@ -180,10 +166,8 @@ void nvlist_move_bool_array(nvlist_t *nvl, const char *name, bool *value, size_t
+ void nvlist_move_string_array(nvlist_t *nvl, const char *name, char **value, size_t nitems);
+ void nvlist_move_nvlist_array(nvlist_t *nvl, const char *name, nvlist_t **value, size_t nitems);
+ void nvlist_move_number_array(nvlist_t *nvl, const char *name, uint64_t *value, size_t nitems);
+-#ifndef _KERNEL
+ void nvlist_move_descriptor(nvlist_t *nvl, const char *name, int value);
+ void nvlist_move_descriptor_array(nvlist_t *nvl, const char *name, int *value, size_t nitems);
+-#endif
+ 
+ /*
+  * The nvlist_get functions returns value associated with the given name.
+@@ -200,10 +184,8 @@ const bool		*nvlist_get_bool_array(const nvlist_t *nvl, const char *name, size_t
+ const uint64_t		*nvlist_get_number_array(const nvlist_t *nvl, const char *name, size_t *nitemsp);
+ const char * const	*nvlist_get_string_array(const nvlist_t *nvl, const char *name, size_t *nitemsp);
+ const nvlist_t * const	*nvlist_get_nvlist_array(const nvlist_t *nvl, const char *name, size_t *nitemsp);
+-#ifndef _KERNEL
+ int			 nvlist_get_descriptor(const nvlist_t *nvl, const char *name);
+ const int		*nvlist_get_descriptor_array(const nvlist_t *nvl, const char *name, size_t *nitemsp);
+-#endif
+ 
+ /*
+  * The nvlist_take functions returns value associated with the given name and
+@@ -220,10 +202,8 @@ bool		 *nvlist_take_bool_array(nvlist_t *nvl, const char *name, size_t *nitemsp)
+ uint64_t	 *nvlist_take_number_array(nvlist_t *nvl, const char *name, size_t *nitemsp);
+ char		**nvlist_take_string_array(nvlist_t *nvl, const char *name, size_t *nitemsp);
+ nvlist_t	**nvlist_take_nvlist_array(nvlist_t *nvl, const char *name, size_t *nitemsp);
+-#ifndef _KERNEL
+ int		 nvlist_take_descriptor(nvlist_t *nvl, const char *name);
+ int		 *nvlist_take_descriptor_array(nvlist_t *nvl, const char *name, size_t *nitemsp);
+-#endif
+ 
+ /*
+  * The nvlist_free functions removes the given name/value pair from the nvlist
+@@ -244,11 +224,8 @@ void nvlist_free_number_array(nvlist_t *nvl, const char *name);
+ void nvlist_free_string_array(nvlist_t *nvl, const char *name);
+ void nvlist_free_nvlist_array(nvlist_t *nvl, const char *name);
+ void nvlist_free_binary_array(nvlist_t *nvl, const char *name);
+-#ifndef _KERNEL
+ void nvlist_free_descriptor(nvlist_t *nvl, const char *name);
+ void nvlist_free_descriptor_array(nvlist_t *nvl, const char *name);
+-#endif
+ 
+-__END_DECLS
+ 
+ #endif	/* !_NV_H_ */
+diff --git a/src/nv_compat.h b/src/nv_compat.h
+index 6bdd131..e8694bd 100644
+--- a/src/nv_compat.h
++++ b/src/nv_compat.h
+@@ -45,11 +45,7 @@
+ 	    __attribute__((__format__ (__printf__, fmtarg, firstvararg)))
+ #endif
+ 
+-#ifdef __linux__
+-#include <endian.h>
+-#else
+-#include <sys/endian.h>
+-#endif
++#include <newlib/endian.h>
+ 
+ #ifdef __linux__
+ static inline uint32_t
+diff --git a/src/nv_impl.h b/src/nv_impl.h
+index 130680b..b51b602 100644
+--- a/src/nv_impl.h
++++ b/src/nv_impl.h
+@@ -53,43 +53,33 @@ typedef struct nvpair nvpair_t;
+ #define	NV_FLAG_BIG_ENDIAN		0x080
+ #define	NV_FLAG_IN_ARRAY		0x100
+ 
+-#ifdef _KERNEL
+-#define	nv_malloc(size)			malloc((size), M_NVLIST, M_WAITOK)
+-#define	nv_calloc(n, size)		mallocarray((n), (size), M_NVLIST, \
+-					    M_WAITOK | M_ZERO)
+-#define	nv_realloc(buf, size)		realloc((buf), (size), M_NVLIST, \
+-					    M_WAITOK)
+-#define	nv_free(buf)			free((buf), M_NVLIST)
+-#define	nv_strdup(buf)			strdup((buf), M_NVLIST)
+-#define	nv_vasprintf(ptr, ...)		vasprintf(ptr, M_NVLIST, __VA_ARGS__)
+ 
+-#define	ERRNO_SET(var)			do { } while (0)
+-#define	ERRNO_SAVE()			do { do { } while(0)
+-#define	ERRNO_RESTORE()			} while (0)
++#ifdef TZR_TA_OPTEE
++#include <tee_api.h>
+ 
+-#define	ERRNO_OR_DEFAULT(default)	(default)
+-
+-#else
++#define	nv_malloc(size)			TEE_Malloc((size), TEE_MALLOC_FILL_ZERO)
++#define	nv_calloc(n, size)		TEE_Malloc((n)*(size), TEE_MALLOC_FILL_ZERO)
++#define	nv_realloc(buf, size)	TEE_Realloc((buf), (size))
++#define	nv_free(buf)			TEE_Free((buf))
+ 
++#elif defined(TZR_PTA_OPTEE)
++// from libutils
+ #define	nv_malloc(size)			malloc((size))
+ #define	nv_calloc(n, size)		calloc((n), (size))
+-#define	nv_realloc(buf, size)		realloc((buf), (size))
++#define	nv_realloc(buf, size)	realloc((buf), (size))
+ #define	nv_free(buf)			free((buf))
++#endif
++
+ #define	nv_strdup(buf)			strdup((buf))
+-#define	nv_vasprintf(ptr, ...)		vasprintf(ptr, __VA_ARGS__)
+ 
+-#define	ERRNO_SET(var)			do { errno = (var); } while (0)
+-#define	ERRNO_SAVE()			do {				\
+-						int _serrno;		\
+-									\
+-						_serrno = errno
++#define	nv_vsnprintf(ptr, size, ...)		vsnprintf(ptr, size, __VA_ARGS__)
+ 
+-#define	ERRNO_RESTORE()				errno = _serrno;	\
+-					} while (0)
++#define	ERRNO_SET(var)			do { } while (0)
++#define	ERRNO_SAVE()			do { do { } while(0)
++#define	ERRNO_RESTORE()			} while (0)
+ 
+-#define	ERRNO_OR_DEFAULT(default)	(errno == 0 ? (default) : errno)
++#define	ERRNO_OR_DEFAULT(default)	(default)
+ 
+-#endif
+ 
+ int	*nvlist_descriptors(const nvlist_t *nvl, size_t *nitemsp);
+ size_t	 nvlist_ndescriptors(const nvlist_t *nvl);
+diff --git a/src/nvlist.c b/src/nvlist.c
+index 9a00792..713a470 100644
+--- a/src/nvlist.c
++++ b/src/nvlist.c
+@@ -33,23 +33,11 @@
+ #include <sys/cdefs.h>
+ __FBSDID("$FreeBSD: head/sys/contrib/libnv/nvlist.c 286796 2015-08-15 06:34:49Z oshogbo $");
+ 
+-#include <sys/param.h>
+-#include <sys/queue.h>
+-
+-#ifdef _KERNEL
+ 
+-#include <sys/errno.h>
+-#include <sys/kernel.h>
+-#include <sys/lock.h>
+-#include <sys/malloc.h>
+-#include <sys/systm.h>
++#define NO_FD_APIS
+ 
+-#include <machine/stdarg.h>
+-
+-#else
+-#include <sys/socket.h>
++#include <sys/queue.h>
+ 
+-#include <errno.h>
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+@@ -60,11 +48,9 @@ __FBSDID("$FreeBSD: head/sys/contrib/libnv/nvlist.c 286796 2015-08-15 06:34:49Z
+ #include <unistd.h>
+ 
+ #include "msgio.h"
+-#endif
+ 
+-#ifdef HAVE_PJDLOG
+-#include <pjdlog.h>
+-#endif
++#include <newlib/strings.h> // strcasecmp()
++
+ 
+ #include "nv.h"
+ 
+@@ -72,22 +58,24 @@ __FBSDID("$FreeBSD: head/sys/contrib/libnv/nvlist.c 286796 2015-08-15 06:34:49Z
+ #include "nvlist_impl.h"
+ #include "nvpair_impl.h"
+ 
+-#ifndef	HAVE_PJDLOG
+-#ifdef _KERNEL
+-#define	PJDLOG_ASSERT(...)		MPASS(__VA_ARGS__)
+-#define	PJDLOG_RASSERT(expr, ...)	KASSERT(expr, (__VA_ARGS__))
+-#define	PJDLOG_ABORT(...)		panic(__VA_ARGS__)
+-#else
+ #include <assert.h>
+ #define	PJDLOG_ASSERT(...)		assert(__VA_ARGS__)
+ #define	PJDLOG_RASSERT(expr, ...)	assert(expr)
++#ifdef TZR_TA_OPTEE
+ #define	PJDLOG_ABORT(...)		do {				\
+-	fprintf(stderr, "%s:%u: ", __FILE__, __LINE__);			\
+-	fprintf(stderr, __VA_ARGS__);					\
+-	fprintf(stderr, "\n");						\
++	EMSG("%s:%u: ", __FILE__, __LINE__);			\
++	EMSG(__VA_ARGS__);					\
++	EMSG("\n");						\
+ 	abort();							\
+ } while (0)
+-#endif
++#elif defined(TZR_PTA_OPTEE)
++#include <kernel/panic.h>
++#define	PJDLOG_ABORT(...)		do {				\
++	EMSG("%s:%u: ", __FILE__, __LINE__);			\
++	EMSG(__VA_ARGS__);					\
++	EMSG("\n");						\
++	panic();							\
++} while (0)
+ #endif
+ 
+ #define	NV_FLAG_PRIVATE_MASK	(NV_FLAG_BIG_ENDIAN | NV_FLAG_IN_ARRAY)
+@@ -109,14 +97,14 @@ struct nvlist {
+ 	PJDLOG_ASSERT((nvl)->nvl_magic == NVLIST_MAGIC);		\
+ } while (0)
+ 
+-#ifdef _KERNEL
+-MALLOC_DEFINE(M_NVLIST, "nvlist", "kernel nvlist");
+-#endif
+ 
+ #define	NVPAIR_ASSERT(nvp)	nvpair_assert(nvp)
+ 
+ #define	NVLIST_HEADER_MAGIC	0x6c
+ #define	NVLIST_HEADER_VERSION	0x00
++#ifndef __packed
++#define __packed __attribute__((packed))
++#endif
+ struct nvlist_header {
+ 	uint8_t		nvlh_magic;
+ 	uint8_t		nvlh_version;
+@@ -124,6 +112,8 @@ struct nvlist_header {
+ 	uint64_t	nvlh_descriptors;
+ 	uint64_t	nvlh_size;
+ } __packed;
++// Note: with __packed the NW-side somehow had undefined __packed resulting in unpacked 24B
++// whereas the TA-side had packed 19B causing issue on packing/unpacking nvlist buffers
+ 
+ nvlist_t *
+ nvlist_create(int flags)
+@@ -419,7 +409,7 @@ nvlist_clone(const nvlist_t *nvl)
+ 	return (newnvl);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ static bool
+ nvlist_dump_error_check(const nvlist_t *nvl, int fd, int level)
+ {
+@@ -634,6 +624,195 @@ nvlist_fdump(const nvlist_t *nvl, FILE *fp)
+ }
+ #endif
+ 
++/* TODO: refactor to take print function as parameter to avoid code duplication */
++
++static bool
++nvlist_dump_error_check_ta(const nvlist_t *nvl, int level)
++{
++
++	if (nvlist_error(nvl) != 0) {
++		DMSG("%*serror: %d\n", level * 4, "",
++		    nvlist_error(nvl));
++		return (true);
++	}
++
++	return (false);
++}
++
++/*
++ * Dump content of nvlist.
++ */
++void
++nvlist_dump_ta(const nvlist_t *nvl)
++{
++	const nvlist_t *tmpnvl;
++	nvpair_t *nvp, *tmpnvp;
++	void *cookie;
++	int level;
++
++	level = 0;
++	if (nvlist_dump_error_check_ta(nvl, level))
++		return;
++
++	nvp = nvlist_first_nvpair(nvl);
++	while (nvp != NULL) {
++		DMSG("%*s%s (%s):", level * 4, "", nvpair_name(nvp),
++		    nvpair_type_string(nvpair_type(nvp)));
++		switch (nvpair_type(nvp)) {
++		case NV_TYPE_NULL:
++			DMSG(" null\n");
++			break;
++		case NV_TYPE_BOOL:
++			DMSG(" %s\n", nvpair_get_bool(nvp) ?
++			    "TRUE" : "FALSE");
++			break;
++		case NV_TYPE_NUMBER:
++			DMSG(" %ju (%jd) (0x%jx)\n",
++			    (uintmax_t)nvpair_get_number(nvp),
++			    (intmax_t)nvpair_get_number(nvp),
++			    (uintmax_t)nvpair_get_number(nvp));
++			break;
++		case NV_TYPE_STRING:
++			DMSG(" [%s]\n", nvpair_get_string(nvp));
++			break;
++		case NV_TYPE_NVLIST:
++			DMSG("\n");
++			tmpnvl = nvpair_get_nvlist(nvp);
++			if (nvlist_dump_error_check_ta(tmpnvl, level + 1))
++				break;
++			tmpnvp = nvlist_first_nvpair(tmpnvl);
++			if (tmpnvp != NULL) {
++				nvl = tmpnvl;
++				nvp = tmpnvp;
++				level++;
++				continue;
++			}
++			break;
++		case NV_TYPE_BINARY:
++		    {
++			const unsigned char *binary;
++			unsigned int ii;
++			size_t size;
++
++			binary = nvpair_get_binary(nvp, &size);
++			DMSG(" %zu ", size);
++			for (ii = 0; ii < size; ii++)
++				DMSG("%02hhx", binary[ii]);
++			DMSG("\n");
++			break;
++		    }
++		case NV_TYPE_BOOL_ARRAY:
++		    {
++			const bool *value;
++			unsigned int ii;
++			size_t nitems;
++
++			value = nvpair_get_bool_array(nvp, &nitems);
++			DMSG(" [ ");
++			for (ii = 0; ii < nitems; ii++) {
++				DMSG("%s", value[ii] ? "TRUE" : "FALSE");
++				if (ii != nitems - 1)
++					DMSG(", ");
++			}
++			DMSG(" ]\n");
++			break;
++		    }
++		case NV_TYPE_STRING_ARRAY:
++		    {
++			const char * const *value;
++			unsigned int ii;
++			size_t nitems;
++
++			value = nvpair_get_string_array(nvp, &nitems);
++			DMSG(" [ ");
++			for (ii = 0; ii < nitems; ii++) {
++				if (value[ii] == NULL)
++					DMSG("NULL");
++				else
++					DMSG("\"%s\"", value[ii]);
++				if (ii != nitems - 1)
++					DMSG(", ");
++			}
++			DMSG(" ]\n");
++			break;
++		    }
++		case NV_TYPE_NUMBER_ARRAY:
++		    {
++			const uint64_t *value;
++			unsigned int ii;
++			size_t nitems;
++
++			value = nvpair_get_number_array(nvp, &nitems);
++			DMSG(" [ ");
++			for (ii = 0; ii < nitems; ii++) {
++				DMSG("%ju (%jd) (0x%jx)",
++				    value[ii], value[ii], value[ii]);
++				if (ii != nitems - 1)
++					DMSG(", ");
++			}
++			DMSG(" ]\n");
++			break;
++		    }
++		case NV_TYPE_NVLIST_ARRAY:
++		    {
++			const nvlist_t * const *value;
++			unsigned int ii;
++			size_t nitems;
++
++			value = nvpair_get_nvlist_array(nvp, &nitems);
++			DMSG(" %zu\n", nitems);
++			tmpnvl = NULL;
++			tmpnvp = NULL;
++			for (ii = 0; ii < nitems; ii++) {
++				if (nvlist_dump_error_check_ta(value[ii],
++				    level + 1)) {
++					break;
++				}
++
++				if (tmpnvl == NULL) {
++					tmpnvp = nvlist_first_nvpair(value[ii]);
++					if (tmpnvp != NULL) {
++						tmpnvl = value[ii];
++					} else {
++						DMSG("%*s,\n",
++						    (level + 1) * 4, "");
++					}
++				}
++			}
++			if (tmpnvp != NULL) {
++				nvl = tmpnvl;
++				nvp = tmpnvp;
++				level++;
++				continue;
++			}
++			break;
++		    }
++		default:
++			EMSG("Unknown type: %d.", nvpair_type(nvp));
++		}
++
++		while ((nvp = nvlist_next_nvpair(nvl, nvp)) == NULL) {
++			do {
++				cookie = NULL;
++				if (nvlist_in_array(nvl))
++					DMSG("%*s,\n", level * 4, "");
++				nvl = nvlist_get_pararr(nvl, &cookie);
++				if (nvl == NULL)
++					return;
++				if (nvlist_in_array(nvl) && cookie == NULL) {
++					nvp = nvlist_first_nvpair(nvl);
++				} else {
++					nvp = cookie;
++					level--;
++				}
++			} while (nvp == NULL);
++			if (nvlist_in_array(nvl) && cookie == NULL)
++				break;
++		}
++	}
++}
++
++
+ /*
+  * The function obtains size of the nvlist after nvlist_pack().
+  */
+@@ -714,7 +893,7 @@ out:
+ 	return (size);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ static int *
+ nvlist_xdescriptors(const nvlist_t *nvl, int *descs)
+ {
+@@ -773,7 +952,7 @@ nvlist_xdescriptors(const nvlist_t *nvl, int *descs)
+ }
+ #endif
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ int *
+ nvlist_descriptors(const nvlist_t *nvl, size_t *nitemsp)
+ {
+@@ -796,7 +975,7 @@ nvlist_descriptors(const nvlist_t *nvl, size_t *nitemsp)
+ size_t
+ nvlist_ndescriptors(const nvlist_t *nvl)
+ {
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ 	void *cookie;
+ 	nvpair_t *nvp;
+ 	size_t ndescs;
+@@ -933,7 +1112,7 @@ nvlist_xpack(const nvlist_t *nvl, int64_t *fdidxp, size_t *sizep)
+ 			}
+ 			ptr = nvpair_pack_nvlist_up(ptr, &left);
+ 			break;
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ 		case NV_TYPE_DESCRIPTOR:
+ 			ptr = nvpair_pack_descriptor(nvp, ptr, fdidxp, &left);
+ 			break;
+@@ -1167,7 +1346,7 @@ nvlist_xunpack(const void *buf, size_t size, const int *fds, size_t nfds,
+ 				goto fail;
+ 			nvlist_set_parent(tmpnvl, nvp);
+ 			break;
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ 		case NV_TYPE_DESCRIPTOR:
+ 			ptr = nvpair_unpack_descriptor(isbe, nvp, ptr, &left,
+ 			    fds, nfds);
+@@ -1251,118 +1430,7 @@ nvlist_unpack(const void *buf, size_t size, int flags)
+ 	return (nvlist_xunpack(buf, size, NULL, 0, flags));
+ }
+ 
+-#if !defined(_KERNEL) && defined(WITH_MSGIO)
+-int
+-nvlist_send(int sock, const nvlist_t *nvl)
+-{
+-	size_t datasize, nfds;
+-	int *fds;
+-	void *data;
+-	int64_t fdidx;
+-	int ret;
+-
+-	if (nvlist_error(nvl) != 0) {
+-		ERRNO_SET(nvlist_error(nvl));
+-		return (-1);
+-	}
+-
+-	fds = nvlist_descriptors(nvl, &nfds);
+-	if (fds == NULL)
+-		return (-1);
+-
+-	ret = -1;
+-	fdidx = 0;
+-
+-	data = nvlist_xpack(nvl, &fdidx, &datasize);
+-	if (data == NULL)
+-		goto out;
+-
+-	if (buf_send(sock, data, datasize) == -1)
+-		goto out;
+-
+-	if (nfds > 0) {
+-		if (fd_send(sock, fds, nfds) == -1)
+-			goto out;
+-	}
+-
+-	ret = 0;
+-out:
+-	ERRNO_SAVE();
+-	nv_free(fds);
+-	nv_free(data);
+-	ERRNO_RESTORE();
+-	return (ret);
+-}
+-
+-nvlist_t *
+-nvlist_recv(int sock, int flags)
+-{
+-	struct nvlist_header nvlhdr;
+-	nvlist_t *nvl, *ret;
+-	unsigned char *buf;
+-	size_t nfds, size, i;
+-	int *fds;
+-
+-	if (buf_recv(sock, &nvlhdr, sizeof(nvlhdr)) == -1)
+-		return (NULL);
+-
+-	if (!nvlist_check_header(&nvlhdr))
+-		return (NULL);
+-
+-	nfds = (size_t)nvlhdr.nvlh_descriptors;
+-	size = sizeof(nvlhdr) + (size_t)nvlhdr.nvlh_size;
+-
+-	buf = nv_malloc(size);
+-	if (buf == NULL)
+-		return (NULL);
+-
+-	memcpy(buf, &nvlhdr, sizeof(nvlhdr));
+-
+-	ret = NULL;
+-	fds = NULL;
+-
+-	if (buf_recv(sock, buf + sizeof(nvlhdr), size - sizeof(nvlhdr)) == -1)
+-		goto out;
+-
+-	if (nfds > 0) {
+-		fds = nv_malloc(nfds * sizeof(fds[0]));
+-		if (fds == NULL)
+-			goto out;
+-		if (fd_recv(sock, fds, nfds) == -1)
+-			goto out;
+-	}
+-
+-	nvl = nvlist_xunpack(buf, size, fds, nfds, flags);
+-	if (nvl == NULL) {
+-		ERRNO_SAVE();
+-		for (i = 0; i < nfds; i++)
+-			close(fds[i]);
+-		ERRNO_RESTORE();
+-		goto out;
+-	}
+-
+-	ret = nvl;
+-out:
+-	ERRNO_SAVE();
+-	nv_free(buf);
+-	nv_free(fds);
+-	ERRNO_RESTORE();
+-
+-	return (ret);
+-}
+-
+-nvlist_t *
+-nvlist_xfer(int sock, nvlist_t *nvl, int flags)
+-{
+ 
+-	if (nvlist_send(sock, nvl) < 0) {
+-		nvlist_destroy(nvl);
+-		return (NULL);
+-	}
+-	nvlist_destroy(nvl);
+-	return (nvlist_recv(sock, flags));
+-}
+-#endif
+ 
+ nvpair_t *
+ nvlist_first_nvpair(const nvlist_t *nvl)
+@@ -1449,7 +1517,7 @@ NVLIST_EXISTS(bool_array, BOOL_ARRAY)
+ NVLIST_EXISTS(number_array, NUMBER_ARRAY)
+ NVLIST_EXISTS(string_array, STRING_ARRAY)
+ NVLIST_EXISTS(nvlist_array, NVLIST_ARRAY)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ NVLIST_EXISTS(descriptor, DESCRIPTOR)
+ NVLIST_EXISTS(descriptor_array, DESCRIPTOR_ARRAY)
+ #endif
+@@ -1579,7 +1647,7 @@ NVLIST_ADD(bool, bool)
+ NVLIST_ADD(uint64_t, number)
+ NVLIST_ADD(const char *, string)
+ NVLIST_ADD(const nvlist_t *, nvlist)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ NVLIST_ADD(int, descriptor);
+ #endif
+ 
+@@ -1610,7 +1678,7 @@ NVLIST_ADD_ARRAY(const bool *, bool)
+ NVLIST_ADD_ARRAY(const uint64_t *, number)
+ NVLIST_ADD_ARRAY(const char * const *, string)
+ NVLIST_ADD_ARRAY(const nvlist_t * const *, nvlist)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ NVLIST_ADD_ARRAY(const int *, descriptor)
+ #endif
+ 
+@@ -1641,7 +1709,7 @@ NVLIST_APPEND_ARRAY(const bool, bool, BOOL)
+ NVLIST_APPEND_ARRAY(const uint64_t, number, NUMBER)
+ NVLIST_APPEND_ARRAY(const char *, string, STRING)
+ NVLIST_APPEND_ARRAY(const nvlist_t *, nvlist, NVLIST)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ NVLIST_APPEND_ARRAY(const int, descriptor, DESCRIPTOR)
+ #endif
+ 
+@@ -1713,7 +1781,7 @@ nvlist_move_nvlist(nvlist_t *nvl, const char *name, nvlist_t *value)
+ 	}
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ void
+ nvlist_move_descriptor(nvlist_t *nvl, const char *name, int value)
+ {
+@@ -1851,7 +1919,7 @@ nvlist_move_number_array(nvlist_t *nvl, const char *name, uint64_t *value,
+ 	}
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ void
+ nvlist_move_descriptor_array(nvlist_t *nvl, const char *name, int *value,
+     size_t nitems)
+@@ -1903,7 +1971,7 @@ NVLIST_GET(bool, bool, BOOL)
+ NVLIST_GET(uint64_t, number, NUMBER)
+ NVLIST_GET(const char *, string, STRING)
+ NVLIST_GET(const nvlist_t *, nvlist, NVLIST)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ NVLIST_GET(int, descriptor, DESCRIPTOR)
+ #endif
+ 
+@@ -1938,7 +2006,7 @@ NVLIST_GET_ARRAY(const bool *, bool, BOOL)
+ NVLIST_GET_ARRAY(const uint64_t *, number, NUMBER)
+ NVLIST_GET_ARRAY(const char * const *, string, STRING)
+ NVLIST_GET_ARRAY(const nvlist_t * const *, nvlist, NVLIST)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ NVLIST_GET_ARRAY(const int *, descriptor, DESCRIPTOR)
+ #endif
+ 
+@@ -1964,7 +2032,7 @@ NVLIST_TAKE(bool, bool, BOOL)
+ NVLIST_TAKE(uint64_t, number, NUMBER)
+ NVLIST_TAKE(char *, string, STRING)
+ NVLIST_TAKE(nvlist_t *, nvlist, NVLIST)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ NVLIST_TAKE(int, descriptor, DESCRIPTOR)
+ #endif
+ 
+@@ -2007,7 +2075,7 @@ NVLIST_TAKE_ARRAY(bool *, bool, BOOL)
+ NVLIST_TAKE_ARRAY(uint64_t *, number, NUMBER)
+ NVLIST_TAKE_ARRAY(char **, string, STRING)
+ NVLIST_TAKE_ARRAY(nvlist_t **, nvlist, NVLIST)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ NVLIST_TAKE_ARRAY(int *, descriptor, DESCRIPTOR)
+ #endif
+ 
+@@ -2047,7 +2115,7 @@ NVLIST_FREE(bool_array, BOOL_ARRAY)
+ NVLIST_FREE(number_array, NUMBER_ARRAY)
+ NVLIST_FREE(string_array, STRING_ARRAY)
+ NVLIST_FREE(nvlist_array, NVLIST_ARRAY)
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ NVLIST_FREE(descriptor, DESCRIPTOR)
+ NVLIST_FREE(descriptor_array, DESCRIPTOR_ARRAY)
+ #endif
+diff --git a/src/nvlist_impl.h b/src/nvlist_impl.h
+index 22acbaa..84e710f 100644
+--- a/src/nvlist_impl.h
++++ b/src/nvlist_impl.h
+@@ -35,9 +35,7 @@
+ #ifndef	_NVLIST_IMPL_H_
+ #define	_NVLIST_IMPL_H_
+ 
+-#ifndef _KERNEL
+ #include <stdint.h>
+-#endif
+ 
+ void nvlist_report_missing(int type, const char *name);
+ nvpair_t *nvlist_get_nvpair_parent(const nvlist_t *nvl);
+diff --git a/src/nvpair.c b/src/nvpair.c
+index 656b2de..c218e2c 100644
+--- a/src/nvpair.c
++++ b/src/nvpair.c
+@@ -33,21 +33,13 @@
+ #include <sys/cdefs.h>
+ __FBSDID("$FreeBSD: head/sys/contrib/libnv/nvpair.c 286796 2015-08-15 06:34:49Z oshogbo $");
+ 
+-#include <sys/param.h>
+-#include <sys/queue.h>
+-
+-#ifdef _KERNEL
+-
+-#include <sys/errno.h>
+-#include <sys/lock.h>
+-#include <sys/malloc.h>
+-#include <sys/systm.h>
+ 
+-#include <machine/stdarg.h>
++#define NO_FD_APIS
++#include <sys/queue.h>
+ 
+-#else
+-#include <errno.h>
++#ifndef NO_FD_APIS
+ #include <fcntl.h>
++#endif /* NO_FD_APIS */
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+@@ -56,11 +48,7 @@ __FBSDID("$FreeBSD: head/sys/contrib/libnv/nvpair.c 286796 2015-08-15 06:34:49Z
+ #include <unistd.h>
+ 
+ #include "common_impl.h"
+-#endif
+ 
+-#ifdef HAVE_PJDLOG
+-#include <pjdlog.h>
+-#endif
+ 
+ #include "nv.h"
+ 
+@@ -68,18 +56,15 @@ __FBSDID("$FreeBSD: head/sys/contrib/libnv/nvpair.c 286796 2015-08-15 06:34:49Z
+ #include "nvlist_impl.h"
+ #include "nvpair_impl.h"
+ 
+-#ifndef	HAVE_PJDLOG
+-#ifdef _KERNEL
+-#define	PJDLOG_ASSERT(...)		MPASS(__VA_ARGS__)
+-#define	PJDLOG_RASSERT(expr, ...)	KASSERT(expr, (__VA_ARGS__))
+-#define	PJDLOG_ABORT(...)		panic(__VA_ARGS__)
+-#else
+ #include <assert.h>
+ #define	PJDLOG_ASSERT(...)		assert(__VA_ARGS__)
+ #define	PJDLOG_RASSERT(expr, ...)	assert(expr)
++#ifndef TZR_PTA_OPTEE
+ #define	PJDLOG_ABORT(...)		abort()
+-#endif
+-#endif
++#else
++#include <kernel/panic.h>
++#define	PJDLOG_ABORT(...)		panic()
++#endif /* !TZR_PTA_OPTEE */
+ 
+ #define	NVPAIR_MAGIC	0x6e7670	/* "nvp" */
+ struct nvpair {
+@@ -98,6 +83,9 @@ struct nvpair {
+ 	PJDLOG_ASSERT((nvp)->nvp_magic == NVPAIR_MAGIC);		\
+ } while (0)
+ 
++#ifndef __packed
++#define __packed __attribute__((packed))
++#endif
+ struct nvpair_header {
+ 	uint8_t		nvph_type;
+ 	uint16_t	nvph_namesize;
+@@ -298,7 +286,7 @@ nvpair_clone(const nvpair_t *nvp)
+ 		data = nvpair_get_nvlist_array(nvp, &datasize);
+ 		newnvp = nvpair_create_nvlist_array(name, data, datasize);
+ 		break;
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ 	case NV_TYPE_DESCRIPTOR:
+ 		newnvp = nvpair_create_descriptor(name,
+ 		    nvpair_get_descriptor(nvp));
+@@ -470,7 +458,7 @@ nvpair_pack_nvlist_array_next(unsigned char *ptr, size_t *leftp)
+ 	return (ptr);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ unsigned char *
+ nvpair_pack_descriptor(const nvpair_t *nvp, unsigned char *ptr, int64_t *fdidxp,
+     size_t *leftp)
+@@ -577,7 +565,7 @@ nvpair_pack_string_array(const nvpair_t *nvp, unsigned char *ptr, size_t *leftp)
+ 	return (ptr);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ unsigned char *
+ nvpair_pack_descriptor_array(const nvpair_t *nvp, unsigned char *ptr,
+     int64_t *fdidxp, size_t *leftp)
+@@ -825,7 +813,7 @@ nvpair_unpack_nvlist(bool isbe __unused, nvpair_t *nvp,
+ 	return (ptr);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ const unsigned char *
+ nvpair_unpack_descriptor(bool isbe, nvpair_t *nvp, const unsigned char *ptr,
+     size_t *leftp, const int *fds, size_t nfds)
+@@ -1018,7 +1006,7 @@ out:
+ 	return (NULL);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ const unsigned char *
+ nvpair_unpack_descriptor_array(bool isbe, nvpair_t *nvp,
+     const unsigned char *ptr, size_t *leftp, const int *fds, size_t nfds)
+@@ -1189,7 +1177,18 @@ nvpair_create_stringv(const char *name, const char *valuefmt, va_list valueap)
+ 	char *str;
+ 	int len;
+ 
+-	len = nv_vasprintf(&str, valuefmt, valueap);
++	const uint8_t max_len = 255;
++	str = nv_malloc(max_len);
++	if (str == NULL)
++		return (NULL);
++	len = nv_vsnprintf(str, max_len, valuefmt, valueap);
++	/* "a return value of size or more  means
++       that the output was truncated" */
++	if ((len < 0) || (len >= max_len)) {
++		nv_free(str);
++		return (NULL);
++	}
++
+ 	if (len < 0)
+ 		return (NULL);
+ 	nvp = nvpair_create_string(name, str);
+@@ -1269,7 +1268,7 @@ nvpair_create_nvlist(const char *name, const nvlist_t *value)
+ 	return (nvp);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ nvpair_t *
+ nvpair_create_descriptor(const char *name, int value)
+ {
+@@ -1488,7 +1487,7 @@ fail:
+ 	return (NULL);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ nvpair_t *
+ nvpair_create_descriptor_array(const char *name, const int *value,
+     size_t nitems)
+@@ -1582,7 +1581,7 @@ nvpair_move_nvlist(const char *name, nvlist_t *value)
+ 	return (nvp);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ nvpair_t *
+ nvpair_move_descriptor(const char *name, int value)
+ {
+@@ -1756,7 +1755,7 @@ fail:
+ 	return (NULL);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ nvpair_t *
+ nvpair_move_descriptor_array(const char *name, int *value, size_t nitems)
+ {
+@@ -1832,7 +1831,7 @@ nvpair_get_nvlist(const nvpair_t *nvp)
+ 	return ((const nvlist_t *)(intptr_t)nvp->nvp_data);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ int
+ nvpair_get_descriptor(const nvpair_t *nvp)
+ {
+@@ -1909,7 +1908,7 @@ nvpair_get_nvlist_array(const nvpair_t *nvp, size_t *nitems)
+ 	return ((const nvlist_t * const *)((intptr_t)nvp->nvp_data));
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ const int *
+ nvpair_get_descriptor_array(const nvpair_t *nvp, size_t *nitems)
+ {
+@@ -2016,7 +2015,7 @@ fail:
+ 	return (-1);
+ }
+ 
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ int
+ nvpair_append_descriptor_array(nvpair_t *nvp, const int value)
+ {
+@@ -2046,7 +2045,7 @@ nvpair_free(nvpair_t *nvp)
+ 
+ 	nvp->nvp_magic = 0;
+ 	switch (nvp->nvp_type) {
+-#ifndef _KERNEL
++#if !defined(_KERNEL) && !defined(NO_FD_APIS)
+ 	case NV_TYPE_DESCRIPTOR:
+ 		close((int)nvp->nvp_data);
+ 		break;
+diff --git a/src/nvpair_impl.h b/src/nvpair_impl.h
+index 57106da..7048ed0 100644
+--- a/src/nvpair_impl.h
++++ b/src/nvpair_impl.h
+@@ -37,9 +37,7 @@
+ 
+ #include <sys/queue.h>
+ 
+-#ifndef _KERNEL
+ #include <stdint.h>
+-#endif
+ 
+ TAILQ_HEAD(nvl_head, nvpair);
+ 
+diff --git a/src/sub.mk b/src/sub.mk
+new file mode 100644
+index 0000000..d2053d4
+--- /dev/null
++++ b/src/sub.mk
+@@ -0,0 +1,12 @@
++global-incdirs-y += include
++
++incdirs-y += external/include
++srcs-y += external/src/newlib/strcasecmp.c
++
++srcs-y += cnvlist.c
++srcs-y += dnvlist.c
++srcs-y += nvlist.c
++srcs-y += nvpair.c
++
++# To remove a certain compiler flag, add a line like this
++#cflags-template_ta.c-y += -Wno-strict-prototypes

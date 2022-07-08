@@ -1,0 +1,26 @@
+diff --git a/app/conf/npf-deps.Dockerfile b/app/conf/npf-deps.Dockerfile
+index 497f016..b1743c9 100644
+--- a/app/conf/npf-deps.Dockerfile
++++ b/app/conf/npf-deps.Dockerfile
+@@ -4,6 +4,9 @@
+ FROM centos:centos8 AS npf-builder
+ WORKDIR /build
+ 
++# Fixes rpm errors
++RUN dnf -y update
++
+ # Install/enable EPEL and Power Tools repositories.
+ RUN dnf install -y epel-release dnf-plugins-core
+ RUN dnf config-manager --set-enabled PowerTools
+diff --git a/app/docker-compose.yaml b/app/docker-compose.yaml
+index ee98846..13dcbd0 100644
+--- a/app/docker-compose.yaml
++++ b/app/docker-compose.yaml
+@@ -36,6 +36,7 @@ services:
+         ipv4_address: 10.0.0.254
+     volumes:
+       - ../:/src
++      - ../../../scripts/:/src/tzrouter/scripts
+     command:
+       - "/bin/true"
+ 

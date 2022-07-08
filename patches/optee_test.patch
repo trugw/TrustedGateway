@@ -1,0 +1,13 @@
+diff --git a/host/xtest/Makefile b/host/xtest/Makefile
+index 7b3de36..81c7c16 100644
+--- a/host/xtest/Makefile
++++ b/host/xtest/Makefile
+@@ -27,7 +27,7 @@ READELF		?= $(CROSS_COMPILE)readelf
+ # Macros to detect the targeted architecture (e.g., arm-linux-gnueabihf or
+ # aarch64-linux-gnu) and the corresponding bit size (32 or 64).
+ define cc-arch
+-$(shell $(1) -v 2>&1 | grep Target | sed 's/Target: \([^-]*\).*/\1/')
++$(shell $(1) -v 2>&1 | grep Ziel | sed 's/Ziel: \([^-]*\).*/\1/')
+ endef
+ define cc-bits
+ $(if $(filter arm, $(1)),32,$(if $(filter aarch64, $(1)),64,unknown-arch))

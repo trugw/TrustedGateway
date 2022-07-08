@@ -1,0 +1,66 @@
+diff --git a/src/murmurhash.c b/src/murmurhash.c
+index 0a46bb1..5501480 100644
+--- a/src/murmurhash.c
++++ b/src/murmurhash.c
+@@ -9,7 +9,7 @@
+  */
+ 
+ #include <inttypes.h>
+-#include <endian.h>
++#include <newlib/endian.h>
+ 
+ #include "utils.h"
+ 
+diff --git a/src/thmap.h b/src/thmap.h
+index 88c0162..9c9fbe1 100644
+--- a/src/thmap.h
++++ b/src/thmap.h
+@@ -8,6 +8,8 @@
+ #ifndef _THMAP_H_
+ #define _THMAP_H_
+ 
++#include <stddef.h>
++
+ __BEGIN_DECLS
+ 
+ struct thmap;
+diff --git a/src/utils.h b/src/utils.h
+index fce66e9..014565f 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -29,8 +29,8 @@
+  */
+ 
+ #ifndef __predict_true
+-#define	__predict_true(x)	__builtin_expect((x) != 0, 1)
+-#define	__predict_false(x)	__builtin_expect((x) != 0, 0)
++#define	__predict_true(x)	__builtin_expect(!!(x), 1)
++#define	__predict_false(x)	__builtin_expect(!!(x), 0)
+ #endif
+ 
+ /*
+@@ -82,6 +82,9 @@ again:
+ #define atomic_exchange_explicit(ptr, newval, o) atomic_exchange(ptr, newval)
+ #endif
+ 
++#include <stdatomic.h>
++
++/*
+ #ifndef atomic_thread_fence
+ #define	memory_order_relaxed	__ATOMIC_RELAXED
+ #define	memory_order_acquire	__ATOMIC_ACQUIRE
+@@ -90,12 +93,14 @@ again:
+ #define	memory_order_seq_cst	__ATOMIC_SEQ_CST
+ #define	atomic_thread_fence(m)	__atomic_thread_fence(m)
+ #endif
++
+ #ifndef atomic_store_explicit
+ #define	atomic_store_explicit	__atomic_store_n
+ #endif
+ #ifndef atomic_load_explicit
+ #define	atomic_load_explicit	__atomic_load_n
+ #endif
++*/
+ 
+ /*
+  * Conciser convenience wrappers.

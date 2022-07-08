@@ -1,0 +1,35 @@
+diff --git a/README.md b/README.md
+index 08a24ab..76631e8 100644
+--- a/README.md
++++ b/README.md
+@@ -8,4 +8,4 @@ information that used to be here in this git can be found under
+ 
+ // OP-TEE core maintainers
+ 
+-[optee_examples]: https://optee.readthedocs.io/building/gits/optee_examples/optee_examples.html
++[optee_examples]: https://optee.readthedocs.io/en/latest/building/gits/optee_examples/optee_examples.html
+diff --git a/acipher/host/main.c b/acipher/host/main.c
+index a111923..e0319d7 100644
+--- a/acipher/host/main.c
++++ b/acipher/host/main.c
+@@ -5,6 +5,7 @@
+ 
+ #include <err.h>
+ #include <inttypes.h>
++#include <limits.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+diff --git a/acipher/ta/user_ta_header_defines.h b/acipher/ta/user_ta_header_defines.h
+index 541f607..f28cb72 100644
+--- a/acipher/ta/user_ta_header_defines.h
++++ b/acipher/ta/user_ta_header_defines.h
+@@ -14,7 +14,7 @@
+ 
+ #define TA_UUID				TA_ACIPHER_UUID
+ 
+-#define TA_FLAGS			0
++#define TA_FLAGS			TA_FLAG_EXEC_DDR
+ #define TA_STACK_SIZE			(2 * 1024)
+ #define TA_DATA_SIZE			(32 * 1024)
+ 

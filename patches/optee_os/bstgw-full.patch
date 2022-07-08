@@ -1,0 +1,2073 @@
+diff --git a/core/arch/arm/arm.mk b/core/arch/arm/arm.mk
+index a18eda3b..542c7807 100644
+--- a/core/arch/arm/arm.mk
++++ b/core/arch/arm/arm.mk
+@@ -93,6 +93,10 @@ core-platform-cppflags	+= -I$(arch-dir)/include
+ core-platform-subdirs += \
+ 	$(addprefix $(arch-dir)/, kernel crypto mm tee) $(platform-dir)
+ 
++ifeq ($(CFG_SECLOAK_EMULATION),y)
++core-platform-subdirs += $(arch-dir)/secloak
++endif
++
+ ifneq ($(CFG_WITH_ARM_TRUSTED_FW),y)
+ core-platform-subdirs += $(arch-dir)/sm
+ endif
+diff --git a/core/arch/arm/include/arm32.h b/core/arch/arm/include/arm32.h
+index 51240858..85fe7e1a 100644
+--- a/core/arch/arm/include/arm32.h
++++ b/core/arch/arm/include/arm32.h
+@@ -44,6 +44,12 @@
+ #define SCR_HCE		BIT32(8)
+ #define SCR_SIF		BIT32(9)
+ 
++#ifdef CFG_SECLOAK_EMULATION
++#define VCR_IFO		BIT32(6)
++#define VCR_IMO		BIT32(7)
++#define VCR_AMO		BIT32(8)
++#endif
++
+ #define SCTLR_M		BIT32(0)
+ #define SCTLR_A		BIT32(1)
+ #define SCTLR_C		BIT32(2)
+diff --git a/core/arch/arm/include/arm32_macros.S b/core/arch/arm/include/arm32_macros.S
+index 93905cab..4a9499c6 100644
+--- a/core/arch/arm/include/arm32_macros.S
++++ b/core/arch/arm/include/arm32_macros.S
+@@ -17,3 +17,14 @@
+ 		.endif
+ 	.endm
+ 
++/* TODO: note that they are now in generated/arm32_sysreg.S */
++#ifdef CFG_SECLOAK_EMULATION
++	.macro read_vcr reg
++	mrc	p15, 0, \reg, c1, c1, 3
++	.endm
++
++	.macro write_vcr reg
++	mcr	p15, 0, \reg, c1, c1, 3
++	.endm
++#endif
++/* secloak */
+diff --git a/core/arch/arm/include/mm/core_mmu.h b/core/arch/arm/include/mm/core_mmu.h
+index 2965eee3..1cd13a0d 100644
+--- a/core/arch/arm/include/mm/core_mmu.h
++++ b/core/arch/arm/include/mm/core_mmu.h
+@@ -22,6 +22,8 @@
+ #define SMALL_PAGE_SIZE		BIT(SMALL_PAGE_SHIFT)
+ #define SMALL_PAGE_MASK		((paddr_t)SMALL_PAGE_SIZE - 1)
+ 
++#ifdef ARM64
++
+ /*
+  * PGDIR is the translation table above the translation table that holds
+  * the pages.
+@@ -36,6 +38,8 @@
+ #define CORE_MMU_PGDIR_SIZE		BIT(CORE_MMU_PGDIR_SHIFT)
+ #define CORE_MMU_PGDIR_MASK		((paddr_t)CORE_MMU_PGDIR_SIZE - 1)
+ 
++#endif
++
+ /* TA user space code, data, stack and heap are mapped using this granularity */
+ #define CORE_MMU_USER_CODE_SHIFT	SMALL_PAGE_SHIFT
+ #define CORE_MMU_USER_CODE_SIZE		BIT(CORE_MMU_USER_CODE_SHIFT)
+@@ -587,6 +591,11 @@ bool core_mmu_user_mapping_is_active(void);
+  */
+ bool core_mmu_mattr_is_ok(uint32_t mattr);
+ 
++#ifdef CFG_SECLOAK_EMULATION
++const struct tee_mmap_region *core_mmu_find_map_by_type(enum teecore_memtypes type);
++const struct tee_mmap_region *core_mmu_find_map_by_type_and_pa(enum teecore_memtypes type, paddr_t pa);
++#endif
++
+ void core_mmu_get_mem_by_type(enum teecore_memtypes type, vaddr_t *s,
+ 			      vaddr_t *e);
+ 
+diff --git a/core/arch/arm/include/mm/generic_ram_layout.h b/core/arch/arm/include/mm/generic_ram_layout.h
+index 0ee01203..f5e1bdfc 100644
+--- a/core/arch/arm/include/mm/generic_ram_layout.h
++++ b/core/arch/arm/include/mm/generic_ram_layout.h
+@@ -8,6 +8,24 @@
+ 
+ #include <util.h>
+ 
++#ifdef ARM32
++
++/*
++ * PGDIR is the translation table above the translation table that holds
++ * the pages.
++ */
++#ifdef CFG_WITH_LPAE
++#define CORE_MMU_PGDIR_SHIFT    21
++#define CORE_MMU_PGDIR_LEVEL    3
++#else
++#define CORE_MMU_PGDIR_SHIFT    20
++#define CORE_MMU_PGDIR_LEVEL    2
++#endif
++#define CORE_MMU_PGDIR_SIZE     BIT(CORE_MMU_PGDIR_SHIFT)
++#define CORE_MMU_PGDIR_MASK     ((paddr_t)CORE_MMU_PGDIR_SIZE - 1)
++
++#endif
++
+ /*
+  * Generic RAM layout configuration directives
+  *
+@@ -60,10 +78,16 @@
+  *
+  * ----------------------------------------------------------------------------
+  * TEE RAM layout without CFG_WITH_PAGER
+- *_
++ *
++ *  +----------------------------------+ <-- BSTGW_VNIC_START
++ *  |  VNIC IO_SEC region (optional)   |   | BSTGW_VNIC_SIZE
+  *  +----------------------------------+ <-- CFG_TZDRAM_START
+  *  | TEE core secure RAM (TEE_RAM)    |
+- *  +----------------------------------+
++ *  +----------------------------------+ <-- TEE_JIT_START
++ *  |  TEE sec.rwx jit RAM (optional)  |   | TEE_JIT_SIZE
++ *  +----------------------------------+ --'  <-- TEE_ENET_DMA_START
++ *  |    ENET IO_SEC DMA (optional)    |        | TEE_ENET_DMA_SIZE
++ *  +----------------------------------+ -------'
+  *  | Trusted Application RAM (TA_RAM) |
+  *  +----------------------------------+
+  *  | SDP test memory (optional)       |
+@@ -116,10 +140,38 @@
+ /* Platform specific platform_config.h may set TEE_LOAD_ADDR */
+ #endif
+ 
++#if !defined(CFG_BSTGW_FIREWALL) || defined(CFG_WITH_PAGER) || defined(CFG_VIRTUALIZATION)
++#define TEE_JIT_SIZE 0
++#define TEE_ENET_DMA_SIZE 0
++#else
++//#define TEE_JIT_SIZE SIZE_1M
++//#define TEE_JIT_SIZE 0x00100000
++#define TEE_JIT_SIZE 0x0010000 // 64kB (16 pages /  8 jit chunks)
++
++#if defined(CFG_BSTGW_SW_NIC)
++#define TEE_ENET_DMA_SIZE 0x0010000 //64kB; (FEC currently needs 40kB with extended BDs, and only 8kB with normal BDs);
++#else
++#define TEE_ENET_DMA_SIZE 0
++#endif /* CFG_BSTGW_SW_NIC */
++
++#ifdef CFG_BSTGW_VNIC
++#ifdef CFG_VNIC_SIZE
++#define BSTGW_VNIC_SIZE CFG_VNIC_SIZE
++#else
++ // TODO: acutally SIZE_4K is sufficient atm, but MB is more convenient to pass to Linux
++#define BSTGW_VNIC_SIZE SIZE_1M
++#endif
++#endif
++#endif
++
+ #ifdef CFG_TEE_RAM_VA_SIZE
+ #define TEE_RAM_VA_SIZE		CFG_TEE_RAM_VA_SIZE
+ #else
+-#define TEE_RAM_VA_SIZE		CORE_MMU_PGDIR_SIZE
++#define TEE_RAM_VA_SIZE		(CORE_MMU_PGDIR_SIZE + TEE_JIT_SIZE + TEE_ENET_DMA_SIZE)
++#endif
++
++#if defined(CFG_BSTGW_FIREWALL) && !defined(CFG_WITH_PAGER) && (TEE_RAM_VA_SIZE < (TEE_JIT_SIZE + TEE_ENET_DMA_SIZE))
++#error TEE_RAM_VA_SIZE and cannot fit TEE_JIT_SIZE + TEE_ENET_DMA_SIZE
+ #endif
+ 
+ #ifdef CFG_SHMEM_SIZE
+@@ -157,13 +209,27 @@
+ #define TA_RAM_START		ROUNDUP(TZDRAM_BASE, CORE_MMU_PGDIR_SIZE)
+ #else
+ #define TEE_RAM_START		TZDRAM_BASE
+-#define TEE_RAM_PH_SIZE		TEE_RAM_VA_SIZE
+-#define TA_RAM_START		ROUNDUP(TZDRAM_BASE + TEE_RAM_VA_SIZE, \
++#define TEE_RAM_PH_SIZE		(TEE_RAM_VA_SIZE - TEE_JIT_SIZE - TEE_ENET_DMA_SIZE)
++#define TEE_JIT_START		ROUNDUP(TZDRAM_BASE + TEE_RAM_PH_SIZE, \
++					SMALL_PAGE_SIZE)
++#define TEE_ENET_DMA_START	ROUNDUP(TEE_JIT_START + TEE_JIT_SIZE, \
++					SMALL_PAGE_SIZE)
++#define TA_RAM_START		ROUNDUP(TEE_ENET_DMA_START + TEE_ENET_DMA_SIZE, \
+ 					SMALL_PAGE_SIZE)
++
++#ifdef CFG_BSTGW_VNIC
++#ifdef CFG_VNIC_START
++#define BSTGW_VNIC_START CFG_VNIC_START
++#else
++// TODO: might want to relocate into TZDRAM
++#define BSTGW_VNIC_START ROUNDDOWN(TEE_RAM_START - BSTGW_VNIC_SIZE, \
++					CORE_MMU_PGDIR_SIZE)
++#endif
++#endif /* CFG_BSTGW_VNIC */
+ #endif /*CFG_WITH_PAGER*/
+ 
+ #define TA_RAM_SIZE		(ROUNDDOWN(TZDRAM_BASE + (TZDRAM_SIZE - \
+-					  TEE_SDP_TEST_MEM_SIZE), \
++					  - TEE_SDP_TEST_MEM_SIZE), \
+ 					  SMALL_PAGE_SIZE) - TA_RAM_START)
+ #endif /*CFG_TZDRAM_START*/
+ 
+diff --git a/core/arch/arm/kernel/generic_boot.c b/core/arch/arm/kernel/generic_boot.c
+index 9162d2b0..950a521f 100644
+--- a/core/arch/arm/kernel/generic_boot.c
++++ b/core/arch/arm/kernel/generic_boot.c
+@@ -714,6 +714,104 @@ static int add_optee_dt_node(struct dt_descriptor *dt)
+ 	return 0;
+ }
+ 
++#ifdef CFG_BSTGW_VNIC
++/*
++ * virtio_block@1e000 {
++ *      comptaible = "virtio,mmio";
++ *      reg = <0x1e000 0x200>;
++ *      interrupts = <42>;
++ * }
++*/
++
++#include <bstgw/vnic-mmio.h>
++
++static void set_dt_val(void *data, uint32_t cell_size, uint64_t val);
++
++static int add_bstgw_dt_node(struct dt_descriptor *dt)
++{
++    return 0;
++    /* todo: fix node (e.g, fix interrupt value) */
++
++	int offs = 0;
++	int ret = 0;
++	int addr_size = -1;
++	int len_size = -1;
++	bool found = true;
++    const char *name = "bstgw_virtnic";
++	char subnode_name[80] = { 0 };
++
++    paddr_t pa = BSTGW_VNIC_START;
++    size_t size = BSTGW_VNIC_SIZE;
++
++	// TODO: make it a subnode of OPTEE
++	offs = fdt_path_offset(dt->blob, "/bastion-gateway");
++
++	if (offs < 0) {
++		found = false;
++		offs = 0;
++	}
++
++	if (IS_ENABLED(CFG_EXTERNAL_DTB_OVERLAY)) {
++		len_size = sizeof(paddr_t) / sizeof(uint32_t);
++		addr_size = sizeof(paddr_t) / sizeof(uint32_t);
++	} else {
++		len_size = fdt_size_cells(dt->blob, offs);
++		if (len_size < 0)
++			return -1;
++		addr_size = fdt_address_cells(dt->blob, offs);
++		if (addr_size < 0)
++			return -1;
++	}
++
++	if (!found) {
++		offs = add_dt_path_subnode(dt, "/", "bastion-gateway");
++		if (offs < 0)
++			return -1;
++		ret = fdt_setprop_cell(dt->blob, offs, "#address-cells",
++				       addr_size);
++		if (ret < 0)
++			return -1;
++		ret = fdt_setprop_cell(dt->blob, offs, "#size-cells", len_size);
++		if (ret < 0)
++			return -1;
++		ret = fdt_setprop(dt->blob, offs, "ranges", NULL, 0);
++		if (ret < 0)
++			return -1;
++	}
++
++	snprintf(subnode_name, sizeof(subnode_name),
++		 "%s@0x%" PRIxPA, name, pa);
++	offs = fdt_add_subnode(dt->blob, offs, subnode_name);
++	if (offs >= 0) {
++        ret = fdt_setprop_string(dt->blob, offs, "compatible",
++                "virtio,mmio");
++        if (ret < 0)
++            return -1;
++
++		uint32_t data[FDT_MAX_NCELLS * 2];
++
++		set_dt_val(data, addr_size, pa);
++		set_dt_val(data + addr_size, len_size, size);
++		ret = fdt_setprop(dt->blob, offs, "reg", data,
++				  sizeof(uint32_t) * (addr_size + len_size));
++		if (ret < 0)
++			return -1;
++
++        // TODO: is that correct? and which interrupt line to use?
++        uint32_t intr_val[FDT_MAX_NCELLS];
++        set_dt_val(intr_val, 1, BSTGW_VNIC_IRQ);
++        ret = fdt_setprop(dt->blob, offs, "interrupts", &intr_val, sizeof(uint32_t));
++        if (ret < 0) {
++            EMSG("Setting interupts property of bstgw-virtnic failed");
++            return -1;
++        }
++	} else {
++		return -1;
++	}
++	return 0;
++}
++#endif
++
+ #ifdef CFG_PSCI_ARM32
+ static int append_psci_compatible(void *fdt, int offs, const char *str)
+ {
+@@ -1005,10 +1103,15 @@ static void init_external_dt(unsigned long phys_dt)
+ 		return;
+ 	}
+ 
++#ifndef CFG_SECLOAK_EMULATION
+ 	if (!core_mmu_add_mapping(MEM_AREA_EXT_DT, phys_dt, CFG_DTB_MAX_SIZE))
+ 		panic("Failed to map external DTB");
+ 
+ 	fdt = phys_to_virt(phys_dt, MEM_AREA_EXT_DT);
++#else
++    // note: bcs. whole NSEC region mapped
++    fdt = phys_to_virt(phys_dt, MEM_AREA_RAM_NSEC);
++#endif /* !CFG_SECLOAK_EMULATION */
+ 	if (!fdt)
+ 		panic();
+ 
+@@ -1047,6 +1150,11 @@ static void update_external_dt(void)
+ 	if (add_optee_dt_node(dt))
+ 		panic("Failed to add OP-TEE Device Tree node");
+ 
++#ifdef CFG_BSTGW_VNIC
++    if (add_bstgw_dt_node(dt))
++        panic("Failed to add Bastion Gateway VirtNIC Device Tree node");
++#endif
++
+ 	if (config_psci(dt))
+ 		panic("Failed to config PSCI");
+ 
+diff --git a/core/arch/arm/kernel/kern.ld.S b/core/arch/arm/kernel/kern.ld.S
+index 6a87326c..40ece0c0 100644
+--- a/core/arch/arm/kernel/kern.ld.S
++++ b/core/arch/arm/kernel/kern.ld.S
+@@ -406,7 +406,9 @@ SECTIONS
+ 	_end_of_ram = .;
+ 
+ #ifndef CFG_WITH_PAGER
+-	__flatmap_unpg_rw_size = _end_of_ram - __flatmap_unpg_rw_start;
++    ASSERT( (_end_of_ram - __flatmap_unpg_rw_start) >= (TEE_JIT_SIZE + TEE_ENET_DMA_SIZE),
++        "TEE_RAM_VA_SIZE is too small for BstGw")
++	__flatmap_unpg_rw_size = _end_of_ram - __flatmap_unpg_rw_start - (TEE_JIT_SIZE + TEE_ENET_DMA_SIZE);
+ 	__get_tee_init_end = .;
+ #endif
+ 
+diff --git a/core/arch/arm/kernel/link.mk b/core/arch/arm/kernel/link.mk
+index d0b08b95..98794900 100644
+--- a/core/arch/arm/kernel/link.mk
++++ b/core/arch/arm/kernel/link.mk
+@@ -178,6 +178,14 @@ $(link-out-dir)/tee-pageable.bin: $(link-out-dir)/tee.elf scripts/gen_tee_bin.py
+ 	@$(cmd-echo-silent) '  GEN     $@'
+ 	$(q)scripts/gen_tee_bin.py --input $< --out_tee_pageable_bin $@
+ 
++# from SeCloak
++all: $(link-out-dir)/sImage
++cleanfiles += $(link-out-dir)/sImage
++$(link-out-dir)/sImage: $(link-out-dir)/tee.bin
++	@$(cmd-echo-silent) '  GEN     $@'
++	mkimage -A $(ARCH) -O linux -C none -a $(CFG_IMG_ADDR) -e $(CFG_IMG_ENTRY) -d $< $@
++#
++
+ all: $(link-out-dir)/tee.bin
+ cleanfiles += $(link-out-dir)/tee.bin
+ $(link-out-dir)/tee.bin: $(link-out-dir)/tee.elf scripts/gen_tee_bin.py
+diff --git a/core/arch/arm/kernel/mutex.c b/core/arch/arm/kernel/mutex.c
+index f77358d6..fd76fa17 100644
+--- a/core/arch/arm/kernel/mutex.c
++++ b/core/arch/arm/kernel/mutex.c
+@@ -11,6 +11,9 @@
+ 
+ #include "mutex_lockdep.h"
+ 
++
++#include <kernel/misc.h>
++
+ void mutex_init(struct mutex *m)
+ {
+ 	*m = (struct mutex)MUTEX_INITIALIZER;
+diff --git a/core/arch/arm/kernel/wait_queue.c b/core/arch/arm/kernel/wait_queue.c
+index c9b1b060..1266ec05 100644
+--- a/core/arch/arm/kernel/wait_queue.c
++++ b/core/arch/arm/kernel/wait_queue.c
+@@ -12,6 +12,9 @@
+ #include <trace.h>
+ #include <types_ext.h>
+ 
++
++#include <kernel/misc.h>
++
+ static unsigned wq_spin_lock;
+ 
+ 
+@@ -30,13 +33,13 @@ void __weak __wq_rpc(uint32_t func, int id, const void *sync_obj __maybe_unused,
+ 	uint32_t ret;
+ 	const char *cmd_str __maybe_unused =
+ 	     func == OPTEE_RPC_WAIT_QUEUE_SLEEP ? "sleep" : "wake ";
+-
++#if 0
+ 	if (fname)
+ 		DMSG("%s thread %u %p %s:%d", cmd_str, id,
+ 		     sync_obj, fname, lineno);
+ 	else
+ 		DMSG("%s thread %u %p", cmd_str, id, sync_obj);
+-
++#endif
+ 	struct thread_param params = THREAD_PARAM_VALUE(IN, func, id, 0);
+ 
+ 	ret = thread_rpc_cmd(OPTEE_RPC_CMD_WAIT_QUEUE, 1, &params);
+diff --git a/core/arch/arm/mm/core_mmu.c b/core/arch/arm/mm/core_mmu.c
+index 5d1496ce..d35881e2 100644
+--- a/core/arch/arm/mm/core_mmu.c
++++ b/core/arch/arm/mm/core_mmu.c
+@@ -125,6 +125,10 @@ register_phys_mem(MEM_AREA_TA_RAM, TA_RAM_START, TA_RAM_SIZE);
+ register_phys_mem(MEM_AREA_NSEC_SHM, TEE_SHMEM_START, TEE_SHMEM_SIZE);
+ #endif
+ 
++#ifdef CFG_SECLOAK_EMULATION
++register_phys_mem(MEM_AREA_RAM_NSEC, CFG_NSECMEM_START, CFG_NSECMEM_SIZE);
++#endif
++
+ /*
+  * Two ASIDs per context, one for kernel mode and one for user mode. ASID 0
+  * and 1 are reserved and not used. This means a maximum of 126 loaded user
+@@ -218,6 +222,12 @@ static struct tee_mmap_region *find_map_by_type(enum teecore_memtypes type)
+ 	return NULL;
+ }
+ 
++#ifdef CFG_SECLOAK_EMULATION
++const struct tee_mmap_region *core_mmu_find_map_by_type(enum teecore_memtypes type) {
++	return find_map_by_type(type);
++}
++#endif
++
+ static struct tee_mmap_region *find_map_by_type_and_pa(
+ 			enum teecore_memtypes type, paddr_t pa)
+ {
+@@ -232,6 +242,12 @@ static struct tee_mmap_region *find_map_by_type_and_pa(
+ 	return NULL;
+ }
+ 
++#ifdef CFG_SECLOAK_EMULATION
++const struct tee_mmap_region *core_mmu_find_map_by_type_and_pa(enum teecore_memtypes type, paddr_t pa) {
++	return find_map_by_type_and_pa(type, pa);
++}
++#endif
++
+ static struct tee_mmap_region *find_map_by_va(void *va)
+ {
+ 	struct tee_mmap_region *map = get_memory_map();
+@@ -257,6 +273,7 @@ static struct tee_mmap_region *find_map_by_pa(unsigned long pa)
+ 	return NULL;
+ }
+ 
++#if defined(CFG_CORE_DYN_SHM) || defined(CFG_SECURE_DATA_PATH)
+ static bool pbuf_is_special_mem(paddr_t pbuf, size_t len,
+ 				const struct core_mmu_phys_mem *start,
+ 				const struct core_mmu_phys_mem *end)
+@@ -270,6 +287,7 @@ static bool pbuf_is_special_mem(paddr_t pbuf, size_t len,
+ 
+ 	return false;
+ }
++#endif
+ 
+ #ifdef CFG_CORE_DYN_SHM
+ static void carve_out_phys_mem(struct core_mmu_phys_mem **mem, size_t *nelems,
+diff --git a/core/arch/arm/mm/core_mmu_v7.c b/core/arch/arm/mm/core_mmu_v7.c
+index 0bcda70b..153da0cd 100644
+--- a/core/arch/arm/mm/core_mmu_v7.c
++++ b/core/arch/arm/mm/core_mmu_v7.c
+@@ -174,7 +174,17 @@
+ #else
+ #	define XLAT_TABLE_ASLR_EXTRA 0
+ #endif
+-#define MAX_XLAT_TABLES		(4 + XLAT_TABLE_ASLR_EXTRA)
++#ifdef CFG_SECLOAK_EMULATION
++#   define XLAT_TABLE_EMU_EXTRA 4
++#else
++#   define XLAT_TABLE_EMU_EXTRA 0
++#endif
++#ifdef CFG_BSTGW_FIREWALL
++#   define XLAT_TABLE_VNIC_EXTRA 1
++#else
++#   define XLAT_TABLE_VNIC_EXTRA 0
++#endif
++#define MAX_XLAT_TABLES		(4 + XLAT_TABLE_ASLR_EXTRA + XLAT_TABLE_VNIC_EXTRA + XLAT_TABLE_EMU_EXTRA)
+ #endif /*!MAX_XLAT_TABLES*/
+ 
+ enum desc_type {
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index c5dfafa0..881d7e8c 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -11,6 +11,7 @@ mx6ull-flavorlist = \
+ 
+ mx6q-flavorlist = \
+ 	mx6qsabrelite \
++	mx6qsabrelite2g \
+ 	mx6qsabreauto \
+ 	mx6qsabresd \
+ 	mx6qhmbedge \
+@@ -242,6 +243,35 @@ CFG_NS_ENTRY_ADDR ?= 0x12000000
+ CFG_UART_BASE ?= UART2_BASE
+ endif
+ 
++ifneq (,$(filter $(PLATFORM_FLAVOR),mx6qsabrelite2g))
++CFG_DDR_SIZE ?= 0x80000000
++CFG_NS_ENTRY_ADDR ?= 0x12000000
++CFG_UART_BASE ?= UART2_BASE
++
++ifeq ($(CFG_BSTGW_FIREWALL),y)
++CFG_SECLOAK_EMULATION ?= y
++CFG_BSTGW_VNIC ?= y
++ifeq ($(CFG_BSTGW_VNIC),y)
++CFG_BSTGW_VNIC_IRQ ?= 65
++CFG_VNIC_SIZE ?= 0x00100000 # 1MB
++endif
++ifneq ($(CFG_DT),y)
++$(error error: CFG_SECLOAK_EMULATION requires CFG_DT=y)
++endif
++endif
++
++endif
++
++ifeq ($(CFG_SECLOAK_EMULATION),y)
++# TODO: currently results in 960kB (+2MB) instead of standard 1MB after JIT + ENET got substracted
++# TODO: JIT and ENET sizes decreased (< 2MB), so more core RAM should be left
++# 		consider increasing in the future;
++#CFG_TEE_RAM_VA_SIZE ?= 0x00400000
++# we increased the heap by 3 3/4 MB, so increase from 4 to 8MB
++#CFG_TEE_RAM_VA_SIZE ?= 0x00800000
++CFG_TEE_RAM_VA_SIZE ?= 0x00a00000 # now 10MB
++endif
++
+ ifneq (,$(filter $(PLATFORM_FLAVOR),mx6slevk))
+ CFG_NS_ENTRY_ADDR ?= 0x80800000
+ CFG_DDR_SIZE ?= 0x40000000
+@@ -341,6 +371,15 @@ $(call force,CFG_GENERIC_BOOT,y)
+ $(call force,CFG_GIC,y)
+ $(call force,CFG_PM_STUBS,y)
+ 
++ifeq ($(CFG_SECLOAK_EMULATION), y)
++$(call force,CFG_IMX_GPIO,y)
++$(call force,CFG_TZC380,y)
++$(call force,CFG_IMX_CSU,y) # TODO: cf. "CFG_CSU"
++#ifneq ($(CFG_CSU), y)
++#$(error error: CFG_SECLOAK_EMULATION requires CFG_CSU=y)
++#endif
++endif
++
+ CFG_BOOT_SYNC_CPU ?= n
+ CFG_BOOT_SECONDARY_REQUEST ?= y
+ CFG_DT ?= y
+@@ -381,6 +420,43 @@ CFG_TZDRAM_SIZE ?= 0x01e00000
+ CFG_SHMEM_START ?= ($(CFG_TZDRAM_START) + $(CFG_TZDRAM_SIZE))
+ CFG_SHMEM_SIZE ?= 0x00200000
+ 
++ifeq ($(CFG_SECLOAK_EMULATION),y)
++
++# currently conflicts with mapping whole NSECMEM region
++ifeq ($(CFG_CORE_DYN_SHM),y)
++$(error SECLOAK_EMULATION currently conflicts with CFG_CORE_DYN_SHM; choose 1")
++endif
++
++CFG_NSECMEM_START ?= $(CFG_DRAM_BASE)
++
++ifeq ($(CFG_BSTGW_VNIC),y)
++CFG_VNIC_START 	  ?= ($(CFG_TZDRAM_START) - $(CFG_VNIC_SIZE))
++CFG_NSECMEM_SIZE  ?= ($(CFG_VNIC_START) - $(CFG_NSECMEM_START))
++else
++CFG_NSECMEM_SIZE  ?= ($(CFG_TZDRAM_START) - $(CFG_NSECMEM_START))
++endif
++
++endif
++
++
++# Config for moving SHMEM before VNIC
++
++#CFG_TZDRAM_START ?= ($(CFG_DRAM_BASE) - 0x02000000 + $(CFG_DDR_SIZE))
++#CFG_TZDRAM_SIZE ?= 0x02000000
++#CFG_SHMEM_SIZE  ?= 0x00200000
++
++#ifeq ($(CFG_BSTGW_VNIC),y)
++#CFG_VNIC_START 	  ?= ($(CFG_TZDRAM_START) - $(CFG_VNIC_SIZE))
++#CFG_SHMEM_START ?= ($(CFG_VNIC_START) - $(CFG_SHMEM_SIZE))
++#else
++#CFG_SHMEM_START ?= ($(CFG_TZDRAM_START) + $(CFG_TZDRAM_SIZE))Z
++#endif
++
++#ifeq ($(CFG_SECLOAK_EMULATION),y)
++#CFG_NSECMEM_START ?= $(CFG_DRAM_BASE)
++#CFG_NSECMEM_SIZE  ?= $(CFG_SHMEM_START) - $(CFG_NSECMEM_START)
++#endif
++
+ CFG_CRYPTO_SIZE_OPTIMIZATION ?= n
+ CFG_WITH_STACK_CANARIES ?= y
+ CFG_MMAP_REGIONS ?= 24
+diff --git a/core/arch/arm/plat-imx/drivers/imx_csu.c b/core/arch/arm/plat-imx/drivers/imx_csu.c
+index c319f069..54ea4d97 100644
+--- a/core/arch/arm/plat-imx/drivers/imx_csu.c
++++ b/core/arch/arm/plat-imx/drivers/imx_csu.c
+@@ -9,7 +9,11 @@
+ #include <io.h>
+ #include <kernel/panic.h>
+ #include <mm/core_memprot.h>
++#ifdef CFG_SECLOAK_EMULATION
++#include <drivers/imx_csu.h>
++#endif
+ 
++#ifndef CFG_SECLOAK_EMULATION
+ struct csu_setting {
+ 	int csu_index;
+ 	uint32_t value;
+@@ -51,9 +55,12 @@ const struct csu_setting csu_setting_imx7ds[] = {
+ 	{59, 0x3300FF},		/* Protect OCRAM_S */
+ 	{(-1), 0},
+ };
++#endif /* !CFG_SECLOAK_EMULATION */
+ 
+-static TEE_Result csu_init(void)
++static TEE_Result imx_csu_init(void)
+ {
++
++#ifndef CFG_SECLOAK_EMULATION
+ 	vaddr_t csu_base;
+ 	vaddr_t offset;
+ 	const struct csu_setting *csu_setting = NULL;
+@@ -92,7 +99,11 @@ static TEE_Result csu_init(void)
+ 			io_read32(csu_base + offset) | CSU_SETTING_LOCK);
+ 	}
+ 
++#else
++	csu_init(CSU_BASE);
++#endif /* !CFG_SECLOAK_EMULATION */
++
+ 	return TEE_SUCCESS;
+ }
+ 
+-driver_init(csu_init);
++driver_init(imx_csu_init);
+diff --git a/core/arch/arm/plat-imx/drivers/tzc380.c b/core/arch/arm/plat-imx/drivers/tzc380.c
+index 3d4762f2..eb3471b3 100644
+--- a/core/arch/arm/plat-imx/drivers/tzc380.c
++++ b/core/arch/arm/plat-imx/drivers/tzc380.c
+@@ -13,6 +13,9 @@
+ #include <mm/core_memprot.h>
+ #include <mm/generic_ram_layout.h>
+ 
++#include <tee_api_types.h>
++#include <initcall.h>
++
+ /*
+  * TZASC2_BASE is asserted non null when used.
+  * This is needed to compile the code for i.MX6UL/L
+@@ -43,12 +46,83 @@ void imx_configure_tzasc(void)
+ 
+ 		tzc_init(addr[i]);
+ 
++#ifndef CFG_SECLOAK_EMULATION
+ 		region = tzc_auto_configure(CFG_DRAM_BASE, CFG_DDR_SIZE,
+-			     TZC_ATTR_SP_NS_RW, region);
++			     TZC_ATTR_SP_NS_RW, region); // Note:  this seems to break all following protections
+ 		region = tzc_auto_configure(CFG_TZDRAM_START, CFG_TZDRAM_SIZE,
+ 			     TZC_ATTR_SP_S_RW, region);
+ 		region = tzc_auto_configure(CFG_SHMEM_START, CFG_SHMEM_SIZE,
+ 			     TZC_ATTR_SP_ALL, region);
+ 		DMSG("Action register: %xl", tzc_get_action());
++#else
++
++		// Warning: tzc_auto_configure() can result in very wrong and unexpected regions
++		region = 0;
++
++		tzc_configure_region(region, 0x00000000, TZC_ATTR_SP_ALL);
++		region++;
++
++#ifdef CFG_BSTGW_VNIC
++		tzc_configure_region(region, BSTGW_VNIC_START, TZC_ATTR_SP_S_RW | TZC_ATTR_REGION_SIZE(TZC_REGION_SIZE_1M) | TZC_ATTR_REGION_ENABLE);
++		region++;
++#endif
++
++		tzc_configure_region(region, CFG_TZDRAM_START, TZC_ATTR_SP_S_RW | TZC_ATTR_REGION_SIZE(TZC_REGION_SIZE_32M) | TZC_ATTR_REGION_ENABLE);
++		region++;
++
++		// IMPORTANT:  overwrite SHMEM region with SP_ALL, otherwise we will get errors / SMC break
++		tzc_configure_region(region, CFG_SHMEM_START, TZC_ATTR_SP_ALL | TZC_ATTR_REGION_SIZE(TZC_REGION_SIZE_2M) | TZC_ATTR_REGION_ENABLE);
++		tzc_set_action(TZC_ACTION_ERR);
++#endif
++
++
++
++
++/*		TODO:  while these auto-config calls are better, the unlucky
++			   sizes/alginement sometimes caused SHMEM to be protected which
++			   resulted in OP-TEE SMC breaks;
++			   also usually there were gaps;
++
++#ifdef CFG_BSTGW_VNIC
++		region = tzc_auto_configure(CFG_DRAM_BASE, BSTGW_VNIC_START - CFG_DRAM_BASE,
++				 TZC_ATTR_SP_ALL, region); // for emulation SeCloak currently needs full access
++        region = tzc_auto_configure(BSTGW_VNIC_START, BSTGW_VNIC_SIZE,
++                TZC_ATTR_SP_S_RW, region);
++#else
++		region = tzc_auto_configure(CFG_DRAM_BASE, CFG_TZDRAM_START - CFG_DRAM_BASE,
++				 TZC_ATTR_SP_ALL, region); // for emulation SeCloak currently needs full access
++#endif
++		region = tzc_auto_configure(CFG_TZDRAM_START, CFG_TZDRAM_SIZE,
++				 TZC_ATTR_SP_S_RW, region);
++		region = tzc_auto_configure(CFG_SHMEM_START, CFG_SHMEM_SIZE,
++			     TZC_ATTR_SP_ALL, region);
++		tzc_set_action(TZC_ACTION_ERR);
++*/
+ 	}
+ }
++
++static TEE_Result imx_dump_tzc(void) {
++#ifdef CFG_BSTGW_VNIC
++	DMSG("region 1 [dram]:   BASE: 0x%08x,  SIZE: 0x%08x", CFG_DRAM_BASE, BSTGW_VNIC_START - CFG_DRAM_BASE);
++#endif	
++	DMSG("region 1 [alt.]:   BASE: 0x%08x,  SIZE: 0x%08x", CFG_DRAM_BASE, CFG_TZDRAM_START - CFG_DRAM_BASE);
++#ifdef CFG_BSTGW_VNIC
++	DMSG("region 2 [vnic]:   BASE: 0x%08x,  SIZE: 0x%08x", BSTGW_VNIC_START, BSTGW_VNIC_SIZE);
++#endif	
++	DMSG("region 3 [optee]:  BASE: 0x%08x,  SIZE: 0x%08x", CFG_TZDRAM_START, CFG_TZDRAM_SIZE);
++	DMSG("region 4 [shmem]:  BASE: 0x%08x,  SIZE: 0x%08x", CFG_SHMEM_START, CFG_SHMEM_SIZE);
++
++	DMSG("entered imx_dump_tzc()");
++	vaddr_t tzasc1_va = core_mmu_get_va(TZASC_BASE, MEM_AREA_IO_SEC);
++	if (!tzasc1_va) { DMSG("Failed to get TZASC1 VA"); return TEE_ERROR_GENERIC; }
++	tzc_dump_state(tzasc1_va);
++
++	vaddr_t tzasc2_va = core_mmu_get_va(TZASC2_BASE, MEM_AREA_IO_SEC);
++	if (!tzasc2_va) { DMSG("Failed to get TZASC1 VA"); return TEE_ERROR_GENERIC; }
++	tzc_dump_state(tzasc2_va);
++
++	DMSG("left imx_dump_tzc()");
++	return TEE_SUCCESS;
++}
++
++driver_init_late(imx_dump_tzc);
+\ No newline at end of file
+diff --git a/core/arch/arm/plat-imx/main.c b/core/arch/arm/plat-imx/main.c
+index 20a13fea..cfa7073b 100644
+--- a/core/arch/arm/plat-imx/main.c
++++ b/core/arch/arm/plat-imx/main.c
+@@ -32,6 +32,9 @@
+ #include <console.h>
+ #include <drivers/gic.h>
+ #include <drivers/imx_uart.h>
++#ifdef CFG_SECLOAK_EMULATION
++#include <drivers/imx_csu.h>
++#endif
+ #include <imx.h>
+ #include <io.h>
+ #include <kernel/generic_boot.h>
+@@ -47,7 +50,9 @@
+ #include <tee/entry_fast.h>
+ #include <tee/entry_std.h>
+ 
++#ifndef CFG_SECLOAK_EMULATION
+ static struct gic_data gic_data;
++#endif
+ 
+ static const struct thread_handlers handlers = {
+ #if defined(CFG_WITH_ARM_TRUSTED_FW)
+@@ -69,6 +74,19 @@ static const struct thread_handlers handlers = {
+ 
+ static struct imx_uart_data console_data;
+ 
++// currently conflicts with mapping whole NSECMEM region
++//register_dynamic_shm(CFG_NSECMEM_START, CFG_NSECMEM_SIZE);
++
++#ifdef CFG_SECLOAK_EMULATION
++
++// != PCIE_BASE, bcs. that one is 0x0100 0000, not 0x0010 0000
++// TODO: this does not look fine to me, esp. as below some regions are mapped with
++//       different permissions (e.g., COHERENT means rwX) ++ UART NSEC vs. SEC
++register_phys_mem(MEM_AREA_IO_SEC, 0x00100000, 0x03300000);
++
++//#endif
++#else
++
+ #ifdef CONSOLE_UART_BASE
+ register_phys_mem_pgdir(MEM_AREA_IO_NSEC, CONSOLE_UART_BASE,
+ 			CORE_MMU_PGDIR_SIZE);
+@@ -118,6 +136,8 @@ register_phys_mem_pgdir(MEM_AREA_IO_SEC,
+ 			CORE_MMU_PGDIR_SIZE);
+ #endif
+ 
++#endif /* CFG_SECLOAK_EMULATION */
++
+ const struct thread_handlers *generic_boot_get_handlers(void)
+ {
+ 	return &handlers;
+@@ -125,7 +145,11 @@ const struct thread_handlers *generic_boot_get_handlers(void)
+ 
+ void itr_core_handler(void)
+ {
++#ifdef CFG_SECLOAK_EMULATION
++    gic_it_handle();
++#else
+ 	gic_it_handle(&gic_data);
++#endif
+ }
+ 
+ void console_init(void)
+@@ -138,6 +162,8 @@ void console_init(void)
+ 
+ void main_init_gic(void)
+ {
++#ifndef CFG_SECLOAK_EMULATION
++
+ #ifdef CFG_ARM_GICV3
+ 	vaddr_t gicd_base;
+ 
+@@ -163,12 +189,22 @@ void main_init_gic(void)
+ 	gic_init(&gic_data, gicc_base, gicd_base);
+ 	itr_init(&gic_data.chip);
+ #endif
++
++#else
++	// TODO: new OP-TEE plat-imx/ does it via driver_init(), but maybe that's too late
++	//       for SeCloak's DT code?
++	//csu_init(CSU_BASE);
++#endif /* !CFG_SECLOAK_EMULATION */
+ }
+ 
+ #if CFG_TEE_CORE_NB_CORE > 1
+ void main_secondary_init_gic(void)
+ {
++#ifdef CFG_SECLOAK_EMULATION
++	gic_cpu_init();
++#else
+ 	gic_cpu_init(&gic_data);
++#endif
+ }
+ #endif
+ 
+diff --git a/core/arch/arm/plat-imx/registers/imx6.h b/core/arch/arm/plat-imx/registers/imx6.h
+index b45f50c8..15dc6d8a 100644
+--- a/core/arch/arm/plat-imx/registers/imx6.h
++++ b/core/arch/arm/plat-imx/registers/imx6.h
+@@ -53,6 +53,10 @@
+ #define MMDC_P0_SIZE			0x4000
+ #define MMDC_P1_BASE			0x021B4000
+ #define MMDC_P1_SIZE			0x4000
++
++// TODO: redundant
++#define TZC380_BASE			0x021D0000
++
+ #define TZASC_BASE			0x21D0000
+ #define TZASC2_BASE			0x21D4000
+ #define UART2_BASE			0x021E8000
+@@ -66,6 +70,10 @@
+ #define AIPS3_BASE			0x02200000
+ #define AIPS3_SIZE			0x100000
+ 
++// TODO: might not be required (+ redundant)
++#define PERIPH_BASE			0x00A00000
++#define PERIPH_SIZE			0x00002000
++
+ #define SCU_BASE			0x00A00000
+ #define PL310_BASE			0x00A02000
+ #define SRC_BASE			0x020D8000
+@@ -90,12 +98,105 @@
+ #define GIC_CPU_BASE			(GIC_BASE + GICC_OFFSET)
+ #define GIC_DIST_BASE			(GIC_BASE + GICD_OFFSET)
+ 
++// TODO: unclear if required
++#define GT_BASE				0x00A00200
++#define GT_COUNTER1			0x00
++#define GT_COUNTER2			0x04
++#define GT_CTRL				0x08
++#define GT_ISR				0x0C
++#define GT_CMPR1			0x10
++#define GT_CMPR2			0x14
++#define GT_AUTOINCR			0x18
++
++#define APBHDMA_BASE			0x00110000
++#define APBHDMA_SIZE			0x00002000
++#define PCIE_BASE			0x01000000
++#define PCIE_SIZE			0x00FFC000
++#define HDMI_BASE			0x00120000
++#define HDMI_SIZE			0x00009000
++#define SATA_BASE			0x02200000
++#define SATA_SIZE			0x00004000
++#define VPU_BASE			0x02040000
++#define VPU_SIZE			0x0003C000
++#define GPU2D_BASE			0x00134000
++#define GPU2D_SIZE			0x00004000
++#define GPU3D_BASE			0x00130000
++#define GPU3D_SIZE			0x00004000
++#define IPU_BASE			0x02600000
++#define IPU_SIZE			0x00800000
++#define OPENVG_BASE			0x02204000
++#define OPENVG_SIZE			0x00004000
++//
++
+ /* Central Security Unit register values */
+ #define CSU_CSL_START			0x0
++#define CSU_CSL0			0x00
++#define CSU_CSL1			0x04
++#define CSU_CSL2			0x08
++#define CSU_CSL3			0x0C
++#define CSU_CSL4			0x10
++#define CSU_CSL5			0x14
++#define CSU_CSL6			0x18
++#define CSU_CSL7			0x1C
++#define CSU_CSL8			0x20
++#define CSU_CSL9			0x24
++#define CSU_CSL10			0x28
++#define CSU_CSL11			0x2C
++#define CSU_CSL12			0x30
++#define CSU_CSL13			0x34
++#define CSU_CSL14			0x38
++#define CSU_CSL15			0x3C
++#define CSU_CSL16			0x40
++#define CSU_CSL17			0x44
++#define CSU_CSL18			0x48
++#define CSU_CSL19			0x4C
++#define CSU_CSL20			0x50
++#define CSU_CSL21			0x54
++#define CSU_CSL22			0x58
++#define CSU_CSL23			0x5C
++#define CSU_CSL24			0x60
++#define CSU_CSL25			0x64
++#define CSU_CSL26			0x68
++#define CSU_CSL27			0x6C
++#define CSU_CSL28			0x70
++#define CSU_CSL29			0x74
++#define CSU_CSL30			0x78
++#define CSU_CSL31			0x7C
++#define CSU_CSL32			0x80
++#define CSU_CSL33			0x84
++#define CSU_CSL34			0x88
++#define CSU_CSL35			0x8C
++#define CSU_CSL36			0x90
++#define CSU_CSL37			0x94
++#define CSU_CSL38			0x98
++#define CSU_CSL39			0x9C
+ #define CSU_CSL_END			0xA0
++#define CSU_HP0				0x200
++#define CSU_HP1				0x204
++#define CSU_SA				0x218
++#define CSU_HPCTRL0			0x358
++#define CSU_HPCTRL1			0x35C
++#define CSU_ACCESS_NONE			0x00330033
++#define CSU_ACCESS_A			0x003300FF
++#define CSU_ACCESS_B			0x00FF0033
+ #define	CSU_ACCESS_ALL			0x00FF00FF
+ #define CSU_SETTING_LOCK		0x01000100
+ 
++// TODO: might not be required
++#define AIPSTZ1_MPR			0x0207C000
++#define AIPSTZ1_OPACR			0x0207C040
++#define AIPSTZ1_OPACR1			0x0207C044
++#define AIPSTZ1_OPACR2			0x0207C048
++#define AIPSTZ1_OPACR3			0x0207C04C
++#define AIPSTZ1_OPACR4			0x0207C050
++
++#define AIPSTZ2_MPR			0x0217C000
++#define AIPSTZ2_OPACR			0x0217C040
++#define AIPSTZ2_OPACR1			0x0217C044
++#define AIPSTZ2_OPACR2			0x0217C048
++#define AIPSTZ2_OPACR3			0x0217C04C
++#define AIPSTZ2_OPACR4			0x0217C050
++
+ /* Used in suspend/resume and low power idle */
+ #define MX6Q_SRC_GPR1			0x20
+ #define MX6Q_SRC_GPR2			0x24
+diff --git a/core/arch/arm/sm/sm_a32.S b/core/arch/arm/sm/sm_a32.S
+index 5b8b0936..2fbbc7d8 100644
+--- a/core/arch/arm/sm/sm_a32.S
++++ b/core/arch/arm/sm/sm_a32.S
+@@ -15,6 +15,9 @@
+ #include <sm/teesmc_opteed.h>
+ #include <sm/teesmc_opteed_macros.h>
+ #include <util.h>
++#ifdef CFG_SECLOAK_EMULATION
++#include <platform_config.h>
++#endif
+ 
+ #define SM_CTX_SEC_END	(SM_CTX_SEC + SM_CTX_SEC_SIZE)
+ 
+@@ -30,7 +33,7 @@ FUNC sm_save_unbanked_regs , :
+ UNWIND(	.fnstart)
+ UNWIND(	.cantunwind)
+ 	/* User mode registers has to be saved from system mode */
+-	cps	#CPSR_MODE_SYS
++	cps	#CPSR_MODE_SYS  // TODO: can't this trigger async. DAs or stuff like that?
+ 	str	sp, [r0], #4
+ 	str	lr, [r0], #4
+ 
+@@ -162,7 +165,11 @@ UNWIND(	.cantunwind)
+ 
+ 	/* Update SCR */
+ 	read_scr r0
++#ifdef CFG_SECLOAK_EMULATION
++	orr	r0, r0, #(SCR_NS | SCR_FIQ | SCR_EA) /* Set NS, FIQ and EA bit in SCR */
++#else
+ 	orr	r0, r0, #(SCR_NS | SCR_FIQ) /* Set NS and FIQ bit in SCR */
++#endif
+ 	write_scr r0
+ 	/*
+ 	 * isb not needed since we're doing an exception return below
+@@ -180,7 +187,11 @@ UNWIND(	.cantunwind)
+ 	 */
+ 	sub	sp, sp, #(SM_CTX_NSEC + SM_NSEC_CTX_R0)
+ 
++#ifdef CFG_SECLOAK_EMULATION
++	bic	r1, r1, #(SCR_NS | SCR_FIQ | SCR_EA) /* Clear NS, FIQ and EA bit in SCR */
++#else
+ 	bic	r1, r1, #(SCR_NS | SCR_FIQ) /* Clear NS and FIQ bit in SCR */
++#endif
+ 	write_scr r1
+ 	isb
+ 
+@@ -215,7 +226,7 @@ UNWIND(	.fnstart)
+ UNWIND(	.cantunwind)
+ 	/* FIQ has a +4 offset for lr compared to preferred return address */
+ 	sub	lr, lr, #4
+-	/* sp points just past struct sm_sec_ctx */
++	/* sp points just past struct sm_nsec_ctx */  // TODO: here was a typo: it mus be Nsec
+ 	srsdb	sp!, #CPSR_MODE_MON
+ 	push	{r0-r7}
+ 
+@@ -230,7 +241,11 @@ UNWIND(	.cantunwind)
+ 
+ 	/* Update SCR */
+ 	read_scr r1
++#ifdef CFG_SECLOAK_EMULATION
++	bic	r1, r1, #(SCR_NS | SCR_FIQ | SCR_EA) /* Clear NS, FIQ and EA bit in SCR */
++#else
+ 	bic	r1, r1, #(SCR_NS | SCR_FIQ) /* Clear NS and FIQ bit in SCR */
++#endif
+ 	write_scr r1
+ 	isb
+ 
+@@ -254,6 +269,104 @@ UNWIND(	.cantunwind)
+ UNWIND(	.fnend)
+ END_FUNC sm_fiq_entry
+ 
++
++#ifdef CFG_SECLOAK_EMULATION
++/* secloak */
++LOCAL_FUNC sm_da_entry , :
++UNWIND(	.fnstart)
++UNWIND(	.cantunwind)
++	sub	lr, lr, #4 // -> instruction after faulter (bcs. lr is faulter + 8 on DA entry)
++
++	/* Before this instruction, SP points just past struct sm_nsec_ctx */ // TODO: copy-paste error: it must be Nsec
++	srsdb	sp!, #CPSR_MODE_MON
++
++	/* Save non-secure r0-r7 into the context */
++	push {r0-r7}
++
++	/* Clear the exclusive monitor */
++	clrex
++
++	/*
++	 * As we're coming from non-secure world the stack pointer points
++	 * to sm_ctx.nsec.r0 at this stage. After the instruction below the
++	 * stack pointer points to sm_ctx.
++	 */
++	sub	sp, sp, #(SM_CTX_NSEC + SM_NSEC_CTX_R0)
++
++  /* Update SCR */
++	read_scr r1
++	bic	r1, r1, #(SCR_NS | SCR_FIQ | SCR_EA) /* Clear NS, FIQ and EA bit in SCR*/
++	write_scr r1
++	isb
++
++	// backup lr, otherwise overwritten by bl below
++	mov r1, lr
++
++	/* Save non-secure context */
++	add	r0, sp, #SM_CTX_NSEC
++	bl	sm_save_unbanked_regs
++	add r0, sp, #(SM_CTX_NSEC + SM_NSEC_CTX_R8)
++	stm	r0!, {r8-r12}
++
++	// restore lr backup
++	mov lr, r1
++
++	/* R6 = Page offset mask */
++	ldr r6, =0xFFF
++	
++	/* R0 = SM context pointer */
++	mov	r0, sp
++
++	/* R1 = Data fault status register */
++	mrc p15, 0, r1, c5, c0, 0 /* Read */
++	
++	/* R2 = Physical address of abort */
++	mrc	p15, 0, r2, c6, c0, 0 /* Read DFAR */
++	and r3, r2, r6 /* Store offset in page */
++	bic r2, r2, r6 /* Clearing offset in page */
++	mcr	p15, 0, r2, c7, c8, 4 /* Translate VA to PA */
++	mrc	p15, 0, r4, c7, c4, 0 /* Read PA */
++	bic r4, r4, r6
++	orr r2, r3, r4 /* Compute PA with offset */
++
++	/* R3 = Physical address of instruction that caused data abort */
++	sub r3, lr, #4 /* Compute from LR value */ // -4, bcs. lr pointing to curr. + 4
++	and r4, r3, r6 /* Store offset in page */
++	bic r3, r3, r6 /* Clearing offset in page */
++	mcr	p15, 0, r3, c7, c8, 4 /* Translate VA to PA */
++	mrc	p15, 0, r5, c7, c4, 0 /* Read PA */
++	bic r5, r5, r6
++	orr r3, r4, r5 /* Compute PA with offset */
++
++	/* Handle the emulation as necessary */
++	bl emu_handle
++
++	/* Restore non-secure context */
++	add	r0, sp, #SM_CTX_NSEC
++	bl	sm_restore_unbanked_regs
++
++	/* Restore non-secure r8-r12 from the context */
++	add r0, sp, #(SM_CTX_NSEC + SM_NSEC_CTX_R8)
++	ldm	r0, {r8-r12}
++
++	/* Update SCR */
++	read_scr r0
++	orr	r0, r0, #(SCR_NS | SCR_FIQ | SCR_EA) /* Set NS, FIQ and EA bit in SCR */
++	write_scr r0
++	/*
++	 * isb not needed since we're doing an exception return below
++	 * without dependency to the changes in SCR before that.
++	 */
++
++	add	sp, sp, #(SM_CTX_NSEC + SM_NSEC_CTX_R0)
++
++	/* Restore non-secure r0-r7 from the context */
++	pop	{r0-r7}
++	rfefd	sp!	
++UNWIND(	.fnend)
++END_FUNC sm_da_entry
++#endif
++
+ 	.section .text.sm_vect_table
+         .align	5
+ LOCAL_FUNC sm_vect_table , :
+@@ -263,7 +376,11 @@ UNWIND(	.cantunwind)
+ 	b	.		/* Undefined instruction	*/
+ 	b	sm_smc_entry	/* Secure monitor call		*/
+ 	b	.		/* Prefetch abort		*/
+-	b	.		/* Data abort			*/
++#ifdef CFG_SECLOAK_EMULATION
++	b	sm_da_entry	/* Data abort			*/
++#else
++    b   .       /* Data abort       */
++#endif
+ 	b	.		/* Reserved			*/
+ 	b	.		/* IRQ				*/
+ 	b	sm_fiq_entry	/* FIQ				*/
+@@ -331,6 +448,14 @@ sm_vect_table_bpiall:
+ 	tst	sp, #(BIT(0) | BIT(1) | BIT(2))
+ 	beq	sm_smc_entry
+ 
++#ifdef CFG_SECLOAK_EMULATION
++    /* Test for DA: SMC check already correctly flipped bit 0, but wrongly bit 2
++       so re-flip bit 2, flip bit 1, and then check for 0, which together results in pattern 011 */
++    eor sp, sp, #(BIT(1) | BIT(2))
++    tst sp, #(BIT(0) | BIT(1) | BIT(2))
++    beq sm_da_entry
++#endif
++
+ 	/* unhandled exception */
+ 	b	.
+ #endif /*!CFG_CORE_WORKAROUND_SPECTRE_BP*/
+diff --git a/core/arch/arm/sm/sm_private.h b/core/arch/arm/sm/sm_private.h
+index c2241096..34419f15 100644
+--- a/core/arch/arm/sm/sm_private.h
++++ b/core/arch/arm/sm/sm_private.h
+@@ -8,5 +8,10 @@
+ 
+ /* Returns one of SM_EXIT_TO_* exit monitor in secure or non-secure world */
+ uint32_t sm_from_nsec(struct sm_ctx *ctx);
++
++#ifdef CFG_SECLOAK_EMULATION
++// SeCloak
++void emu_handle(struct sm_ctx *ctx, unsigned long status, unsigned long data_paddr, unsigned long instr_paddr);
++#endif
+ #endif /*SM_PRIVATE_H*/
+ 
+diff --git a/core/core.mk b/core/core.mk
+index 016f1489..d52463ac 100644
+--- a/core/core.mk
++++ b/core/core.mk
+@@ -146,6 +146,68 @@ libdir = core/lib/zlib
+ include mk/lib.mk
+ endif
+ 
++ifeq ($(CFG_BSTGW_FIREWALL),y)
++
++# TODO
++# errno based on newlib/libc/include/sys/errno.h
++cflags$(sm)   += -D__BEGIN_DECLS= -DEEXIST=\(17\) -DEINVAL=\(22\) -D__END_DECLS= \
++	-DENOENT=\(2\) -DENOMEM=\(12\) -D__FBSDID\(x\)= -D__KERNEL_RCSID\(x,y\)= -DNDEBUG \
++	-D_NPF_STANDALONE -DTZR_OPTEE -DTZR_PTA_OPTEE -D__RCSID\(x\)= -DENOTSUP=\(134\)
++
++cflags$(sm)   += -DENOTTY=\(25\) -DE2BIG=\(7\) -DENAMETOOLONG=\(91\) \
++	-DENETUNREACH=\(114\) -DESRCH=\(3\) -DEBUSY=\(16\) -DENOSPC=\(28\) \
++	-DEISCONN=\(127\)
++
++libname = npfnewlib
++libdir = core/lib/bstgw/libnpfnewlib
++include mk/lib.mk
++
++libname = nv
++libdir = core/lib/bstgw/libnv
++include mk/lib.mk
++
++libname = cdb
++libdir = core/lib/bstgw/libcdb
++include mk/lib.mk
++
++libname = npf
++libdir = core/lib/bstgw/libnpf
++include mk/lib.mk
++
++libname = lpm
++libdir = core/lib/bstgw/liblpm
++include mk/lib.mk
++
++libname = pthwrap
++libdir = core/lib/bstgw/libpthwrap
++include mk/lib.mk
++
++libname = qsbr
++libdir = core/lib/bstgw/libqsbr
++include mk/lib.mk
++
++libname = thmap
++libdir = core/lib/bstgw/libthmap
++include mk/lib.mk
++
++libname = sljit
++libdir = core/lib/bstgw/libsljit
++include mk/lib.mk
++
++libname = bpfjit
++libdir = core/lib/bstgw/libbpfjit
++include mk/lib.mk
++
++libname = dpdk
++libdir = core/lib/bstgw/libdpdk
++include mk/lib.mk
++
++# TODO: don't make a lib out of it?
++libname = npfkern
++libdir = core/bstgw/npf_firewall
++include mk/lib.mk
++endif
++
+ #
+ # Do main source
+ #
+diff --git a/core/drivers/imx_uart.c b/core/drivers/imx_uart.c
+index d0e83f3c..8da3275a 100644
+--- a/core/drivers/imx_uart.c
++++ b/core/drivers/imx_uart.c
+@@ -140,6 +140,7 @@ void imx_uart_init(struct imx_uart_data *pd, paddr_t base)
+ 	 */
+ }
+ 
++#ifndef CFG_SECLOAK_EMULATION
+ #ifdef CFG_DT
+ static struct serial_chip *imx_uart_dev_alloc(void)
+ {
+@@ -198,3 +199,4 @@ const struct dt_driver imx_dt_driver __dt_driver = {
+ };
+ 
+ #endif /* CFG_DT */
++#endif /* !CFG_SECLOAK_EMULATION */
+diff --git a/core/drivers/sub.mk b/core/drivers/sub.mk
+index 1dabc74e..464f9f4b 100644
+--- a/core/drivers/sub.mk
++++ b/core/drivers/sub.mk
+@@ -2,7 +2,17 @@ srcs-$(CFG_CDNS_UART) += cdns_uart.c
+ srcs-$(CFG_PL011) += pl011.c
+ srcs-$(CFG_TZC400) += tzc400.c
+ srcs-$(CFG_TZC380) += tzc380.c
++
++ifeq ($(CFG_SECLOAK_EMULATION),y)
++srcs-$(CFG_GIC) += gic_secloak.c
++else
+ srcs-$(CFG_GIC) += gic.c
++endif
++
++ifeq ($(CFG_BSTGW_SW_NIC),y)
++subdirs-y += bstgw
++endif
++
+ srcs-$(CFG_PL061) += pl061_gpio.c
+ srcs-$(CFG_PL022) += pl022_spi.c
+ srcs-$(CFG_SP805_WDT) += sp805_wdt.c
+@@ -31,5 +41,11 @@ srcs-$(CFG_BCM_HWRNG) += bcm_hwrng.c
+ srcs-$(CFG_BCM_SOTP) += bcm_sotp.c
+ srcs-$(CFG_BCM_GPIO) += bcm_gpio.c
+ 
++ifeq ($(CFG_SECLOAK_EMULATION),y)
++srcs-$(CFG_IMX_GPIO) += imx_gpio.c
++srcs-$(CFG_IMX_CSU) += imx_csu.c
++srcs-y += dt.c
++endif
++
+ subdirs-y += crypto
+ subdirs-$(CFG_BNXT_FW) += bnxt
+diff --git a/core/drivers/tzc380.c b/core/drivers/tzc380.c
+index c7d5f2e8..379a68bb 100644
+--- a/core/drivers/tzc380.c
++++ b/core/drivers/tzc380.c
+@@ -228,7 +228,18 @@ int tzc_auto_configure(vaddr_t addr, vaddr_t size, uint32_t attr,
+ 	uint64_t lsize = size;
+ 	uint32_t mask = 0;
+ 	int i = 0;
+-	uint8_t pow = TZC380_POW;
++//	uint8_t pow = TZC380_POW;
++	uint8_t pow = 0;
++
++	assert(tzc.base);
++
++	/*
++	 * TZC380 RM
++	 * For region_attributes_<n> registers, region_size:
++	 * Note: The AXI address width, that is AXI_ADDRESS_MSB+1, controls the
++	 * upper limit value of the field.
++	 */
++	pow = tzc.addr_width;
+ 
+ 	while (lsize != 0 && pow > 15) {
+ 		region_size = 1ULL << pow;
+@@ -291,25 +302,25 @@ static uint32_t tzc_read_region_base_high(vaddr_t base, uint32_t region)
+ }
+ 
+ #define	REGION_MAX	16
+-void tzc_dump_state(void)
++void tzc_dump_state(vaddr_t va_tzc_base)
+ {
+ 	uint32_t n;
+ 	uint32_t temp_32reg, temp_32reg_h;
+ 
+ 	DMSG("enter");
+ 	DMSG("security_inversion_en %x",
+-	     io_read32(tzc.base + SECURITY_INV_EN_OFF));
++	     io_read32(va_tzc_base + SECURITY_INV_EN_OFF));
+ 	for (n = 0; n <= REGION_MAX; n++) {
+-		temp_32reg = tzc_read_region_attributes(tzc.base, n);
++		temp_32reg = tzc_read_region_attributes(va_tzc_base, n);
+ 		if (!(temp_32reg & TZC_ATTR_REGION_EN_MASK))
+ 			continue;
+ 
+ 		DMSG("");
+ 		DMSG("region %d", n);
+-		temp_32reg = tzc_read_region_base_low(tzc.base, n);
+-		temp_32reg_h = tzc_read_region_base_high(tzc.base, n);
++		temp_32reg = tzc_read_region_base_low(va_tzc_base, n);
++		temp_32reg_h = tzc_read_region_base_high(va_tzc_base, n);
+ 		DMSG("region_base: 0x%08x%08x", temp_32reg_h, temp_32reg);
+-		temp_32reg = tzc_read_region_attributes(tzc.base, n);
++		temp_32reg = tzc_read_region_attributes(va_tzc_base, n);
+ 		DMSG("region sp: %x", temp_32reg >> TZC_ATTR_SP_SHIFT);
+ 		DMSG("region size: %x", (temp_32reg & TZC_REGION_SIZE_MASK) >>
+ 				TZC_REGION_SIZE_SHIFT);
+diff --git a/core/include/drivers/gic.h b/core/include/drivers/gic.h
+index f9bb28ec..c6065c58 100644
+--- a/core/include/drivers/gic.h
++++ b/core/include/drivers/gic.h
+@@ -9,6 +9,8 @@
+ #include <types_ext.h>
+ #include <kernel/interrupt.h>
+ 
++#ifndef CFG_SECLOAK_EMULATION
++
+ #define GIC_DIST_REG_SIZE	0x10000
+ #define GIC_CPU_REG_SIZE	0x10000
+ #define GIC_SGI(x)		(x)
+@@ -37,4 +39,20 @@ void gic_cpu_init(struct gic_data *gd);
+ void gic_it_handle(struct gic_data *gd);
+ 
+ void gic_dump_state(struct gic_data *gd);
++
++#else
++ struct gic_data {
++ 	vaddr_t gicc_base;
++ 	vaddr_t gicd_base;
++ 	size_t max_it;
++	struct irq_chip chip;
++	struct irq_chip chip_gpc;
++ };
++ 
++
++void gic_cpu_init(void);
++void gic_it_handle(void);
++void gic_dump_state(void);
++#endif /* !CFG_SECLOAK_EMULATION */
++
+ #endif /*__DRIVERS_GIC_H*/
+diff --git a/core/include/drivers/tzc380.h b/core/include/drivers/tzc380.h
+index fed1d92f..116f8c9b 100644
+--- a/core/include/drivers/tzc380.h
++++ b/core/include/drivers/tzc380.h
+@@ -131,6 +131,8 @@ enum tzc_action {
+ 				TZC_SP_NS_R) << TZC_ATTR_SP_SHIFT)
+ #define TZC_ATTR_SP_S_RW	((TZC_SP_S_W | TZC_SP_S_R) << \
+ 				 TZC_ATTR_SP_SHIFT)
++#define TZC_ATTR_SP_S_RW_NS_R	((TZC_SP_S_W | TZC_SP_S_R | TZC_SP_NS_R) << \
++				 TZC_ATTR_SP_SHIFT)
+ #define TZC_ATTR_SP_NS_RW	((TZC_SP_NS_W | TZC_SP_NS_R) << \
+ 				TZC_ATTR_SP_SHIFT)
+ 
+@@ -220,9 +222,9 @@ int tzc_auto_configure(vaddr_t addr, vaddr_t rsize, uint32_t attr,
+ 		       uint8_t region);
+ 
+ #if TRACE_LEVEL >= TRACE_DEBUG
+-void tzc_dump_state(void);
++void tzc_dump_state(vaddr_t tzc_base);
+ #else
+-static inline void tzc_dump_state(void)
++static inline void tzc_dump_state(vaddr_t tzc_base)
+ {
+ }
+ #endif
+diff --git a/core/include/kernel/dt.h b/core/include/kernel/dt.h
+index 932e88d7..1bb078e4 100644
+--- a/core/include/kernel/dt.h
++++ b/core/include/kernel/dt.h
+@@ -11,6 +11,9 @@
+ #include <stdint.h>
+ #include <types_ext.h>
+ #include <util.h>
++#ifdef CFG_SECLOAK_EMULATION
++#include <drivers/dt.h>
++#endif
+ 
+ /*
+  * Bitfield to reflect status and secure-status values ("okay", "disabled"
+@@ -46,12 +49,22 @@ struct dt_node_info {
+ 
+ struct dt_device_match {
+ 	const char *compatible;
++#ifdef CFG_SECLOAK_EMULATION
++	const void *data;
++#endif
+ };
+ 
++#ifdef CFG_SECLOAK_EMULATION
++struct device;
++#endif
++
+ struct dt_driver {
+ 	const char *name;
+ 	const struct dt_device_match *match_table; /* null-terminated */
+ 	const void *driver;
++#ifdef CFG_SECLOAK_EMULATION
++	int (*probe)(const void *fdt, struct device *dev, const void *data);
++#endif
+ };
+ 
+ #define __dt_driver __section(".rodata.dtdrv" __SECTION_FLAGS_RODATA)
+@@ -64,11 +77,15 @@ struct dt_driver {
+  * @offs: node offset
+  */
+ const struct dt_driver *dt_find_compatible_driver(const void *fdt, int offs);
++#ifdef CFG_SECLOAK_EMULATION
++int dt_probe_compatible_driver(const void *fdt, struct device *dev);
++#endif
+ 
+ const struct dt_driver *__dt_driver_start(void);
+ 
+ const struct dt_driver *__dt_driver_end(void);
+ 
++#ifndef CFG_SECLOAK_EMULATION
+ /*
+  * Map a device into secure or non-secure memory and return the base VA and
+  * the mapping size. The mapping is done with type MEM_AREA_IO_SEC or
+@@ -84,6 +101,10 @@ const struct dt_driver *__dt_driver_end(void);
+  * Returns 0 on success or -1 in case of error.
+  */
+ int dt_map_dev(const void *fdt, int offs, vaddr_t *base, size_t *size);
++#else
++const void* dt_read_property(const void *fdt, int offs, const char *name);
++int dt_read_property_u32(const void *fdt, int offs, const char *name, uint32_t *out);
++#endif
+ 
+ /*
+  * Check whether the node at @offs contains the property with propname or not.
+diff --git a/core/include/kernel/interrupt.h b/core/include/kernel/interrupt.h
+index 849e987f..0602cf61 100644
+--- a/core/include/kernel/interrupt.h
++++ b/core/include/kernel/interrupt.h
+@@ -9,9 +9,14 @@
+ #include <sys/queue.h>
+ #include <util.h>
+ 
++#ifdef CFG_SECLOAK_EMULATION
++#include <libfdt.h>
++#endif
++
+ #define ITRF_TRIGGER_LEVEL	BIT(0)
+ #define ITRF_SHARED			BIT(1)
+ 
++#ifndef CFG_SECLOAK_EMULATION
+ struct itr_chip {
+ 	const struct itr_ops *ops;
+ };
+@@ -59,6 +64,68 @@ void itr_raise_sgi(size_t it, uint8_t cpu_mask);
+  */
+ void itr_set_affinity(size_t it, uint8_t cpu_mask);
+ 
++#else
++
++enum irq_return {
++	ITRR_NONE,
++	ITRR_HANDLED,
++	ITRR_HANDLED_PASS,
++	ITRR_HANDLED_DEFAULT
++ };
++ 
++struct irq_handler {
++	void *data;
++	enum irq_return (*handle)(struct irq_handler *h);
++ };
++ 
++struct irq_chip;
++struct irq_chip_ops {
++	int32_t (*map)(struct irq_chip *chip, const fdt32_t *dt_spec, size_t *irq, uint32_t *flags);
++	int32_t (*add)(struct irq_chip *chip, size_t irq, uint32_t flags);
++	int32_t (*remove)(struct irq_chip *chip, size_t irq);
++	int32_t (*enable)(struct irq_chip *chip, size_t irq);
++	int32_t (*disable)(struct irq_chip *chip, size_t irq);
++	int32_t (*secure)(struct irq_chip *chip, size_t irq);
++	int32_t (*unsecure)(struct irq_chip *chip, size_t irq);
++	int32_t (*raise)(struct irq_chip *chip, size_t irq);
++	int32_t (*raise_sgi)(struct irq_chip *chip, size_t irq, uint8_t cpu_mask);
++	int32_t (*set_affinity)(struct irq_chip *chip, size_t irq, uint8_t cpu_mask);
++ };
++ 
++struct irq_chip {
++	struct device *dev;
++	const struct irq_chip_ops *ops;
++	size_t num_irqs;
++	bool default_handler;
++	struct irq_handler **handlers;
++ 	void *data;
++	SLIST_ENTRY(irq_chip) entry;
++};
++
++struct irq_desc {
++	struct irq_chip *chip;
++	size_t irq;
++ };
++
++int32_t irq_construct_chip(struct irq_chip *chip, struct device *dev, const struct irq_chip_ops *ops, size_t num_irqs, void *data, bool default_handler);
++void irq_destruct_chip(struct irq_chip *chip);
++struct irq_chip *irq_find_chip(struct device *dev);
++
++enum irq_return irq_handle(struct irq_chip *chip, size_t irq);
++
++int32_t irq_map(struct irq_chip *chip, const fdt32_t *dt_spec, size_t *irq, uint32_t *flags);
++int32_t irq_add(struct irq_desc *desc, uint32_t flags, struct irq_handler *handler);
++int32_t irq_remove(struct irq_desc *desc);
++int32_t irq_enable(struct irq_desc *desc);
++int32_t irq_disable(struct irq_desc *desc);
++int32_t irq_secure(struct irq_desc *desc);
++int32_t irq_unsecure(struct irq_desc *desc);
++int32_t irq_raise(struct irq_desc *desc);
++int32_t irq_raise_sgi(struct irq_desc *desc, uint8_t cpu_mask);
++int32_t irq_set_affinity(struct irq_desc *desc, uint8_t cpu_mask);
++
++#endif /* !CFG_SECLOAK_EMULATION */
++
+ /*
+  * __weak overridable function which is called when a secure interrupt is
+  * received. The default function calls panic() immediately, platforms which
+diff --git a/core/kernel/sub.mk b/core/kernel/sub.mk
+index 55319a3d..329662b2 100644
+--- a/core/kernel/sub.mk
++++ b/core/kernel/sub.mk
+@@ -2,10 +2,22 @@ srcs-$(CFG_CORE_SANITIZE_KADDRESS) += asan.c
+ cflags-remove-asan.c-y += $(cflags_kasan)
+ srcs-y += assert.c
+ srcs-y += console.c
++
++ifeq ($(CFG_SECLOAK_EMULATION),y)
++srcs-y += dt_secloak.c
++else
+ srcs-$(CFG_DT) += dt.c
++endif
++
+ srcs-y += pm.c
+ srcs-y += handle.c
++
++ifeq ($(CFG_SECLOAK_EMULATION),y)
++srcs-y += interrupt_secloak.c
++else
+ srcs-y += interrupt.c
++endif
++
+ srcs-$(CFG_LOCKDEP) += lockdep.c
+ srcs-$(CFG_CORE_DYN_SHM) += msg_param.c
+ srcs-y += panic.c
+diff --git a/core/pta/tests/sub.mk b/core/pta/tests/sub.mk
+index 59b7064e..29460f4f 100644
+--- a/core/pta/tests/sub.mk
++++ b/core/pta/tests/sub.mk
+@@ -1,5 +1,7 @@
+ srcs-$(CFG_WITH_USER_TA) += fs_htree.c
++ifneq ($(CFG_SECLOAK_EMULATION),y)
+ srcs-y += interrupt.c
++endif
+ srcs-y += invoke.c
+ srcs-$(CFG_LOCKDEP) += lockdep.c
+ srcs-y += misc.c
+diff --git a/core/sub.mk b/core/sub.mk
+index 03cc6bc7..b87cdd9b 100644
+--- a/core/sub.mk
++++ b/core/sub.mk
+@@ -5,6 +5,17 @@ subdirs-y += mm
+ subdirs-y += pta
+ subdirs-y += tee
+ 
++ifeq ($(CFG_BSTGW_VNIC), y)
++ifneq ($(CFG_BSTGW_FIREWALL), y)
++$(error error: CFG_BSTGW_VNIC requires CFG_BSTGW_FIREWALL)
++endif
++ifneq ($(CFG_SECLOAK_EMULATION), y)
++$(error error: CFG_BSTGW_VNIC requires CFG_SECLOAK_EMULATION)
++endif
++endif
++
++subdirs-$(CFG_BSTGW_FIREWALL) += bstgw
++
+ ifeq ($(CFG_WITH_USER_TA),y)
+ gensrcs-y += ta_pub_key
+ produce-ta_pub_key = ta_pub_key.c
+diff --git a/lib/libmbedtls/mbedtls/include/mbedtls/config.h b/lib/libmbedtls/mbedtls/include/mbedtls/config.h
+index 5a4661cd..f0477026 100644
+--- a/lib/libmbedtls/mbedtls/include/mbedtls/config.h
++++ b/lib/libmbedtls/mbedtls/include/mbedtls/config.h
+@@ -2,6 +2,8 @@
+ /* Copyright (c) 2018, Linaro Limited */
+ #ifdef __KERNEL__
+ #include <mbedtls_config_kernel.h>
++#elif defined(__TZR_TA__)
++#include <bstgw_mbed_config.h>
+ #else
+ #include <mbedtls_config_uta.h>
+ #endif
+diff --git a/lib/libmbedtls/mbedtls/library/certs.c b/lib/libmbedtls/mbedtls/library/certs.c
+index cd416d25..faed5855 100644
+--- a/lib/libmbedtls/mbedtls/library/certs.c
++++ b/lib/libmbedtls/mbedtls/library/certs.c
+@@ -118,28 +118,27 @@ const size_t mbedtls_test_cli_key_ec_len = sizeof( mbedtls_test_cli_key_ec );
+ #if defined(MBEDTLS_RSA_C)
+ 
+ #if defined(MBEDTLS_SHA256_C)
+-#define TEST_CA_CRT_RSA_SHA256                                          \
+-"-----BEGIN CERTIFICATE-----\r\n"                                       \
+-"MIIDhzCCAm+gAwIBAgIBADANBgkqhkiG9w0BAQsFADA7MQswCQYDVQQGEwJOTDER\r\n"  \
+-"MA8GA1UECgwIUG9sYXJTU0wxGTAXBgNVBAMMEFBvbGFyU1NMIFRlc3QgQ0EwHhcN\r\n"  \
+-"MTcwNTA0MTY1NzAxWhcNMjcwNTA1MTY1NzAxWjA7MQswCQYDVQQGEwJOTDERMA8G\r\n"  \
+-"A1UECgwIUG9sYXJTU0wxGTAXBgNVBAMMEFBvbGFyU1NMIFRlc3QgQ0EwggEiMA0G\r\n"  \
+-"CSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDA3zf8F7vglp0/ht6WMn1EpRagzSHx\r\n"  \
+-"mdTs6st8GFgIlKXsm8WL3xoemTiZhx57wI053zhdcHgH057Zk+i5clHFzqMwUqny\r\n"  \
+-"50BwFMtEonILwuVA+T7lpg6z+exKY8C4KQB0nFc7qKUEkHHxvYPZP9al4jwqj+8n\r\n"  \
+-"YMPGn8u67GB9t+aEMr5P+1gmIgNb1LTV+/Xjli5wwOQuvfwu7uJBVcA0Ln0kcmnL\r\n"  \
+-"R7EUQIN9Z/SG9jGr8XmksrUuEvmEF/Bibyc+E1ixVA0hmnM3oTDPb5Lc9un8rNsu\r\n"  \
+-"KNF+AksjoBXyOGVkCeoMbo4bF6BxyLObyavpw/LPh5aPgAIynplYb6LVAgMBAAGj\r\n"  \
+-"gZUwgZIwHQYDVR0OBBYEFLRa5KWz3tJS9rnVppUP6z68x/3/MGMGA1UdIwRcMFqA\r\n"  \
+-"FLRa5KWz3tJS9rnVppUP6z68x/3/oT+kPTA7MQswCQYDVQQGEwJOTDERMA8GA1UE\r\n"  \
+-"CgwIUG9sYXJTU0wxGTAXBgNVBAMMEFBvbGFyU1NMIFRlc3QgQ0GCAQAwDAYDVR0T\r\n"  \
+-"BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAHK/HHrTZMnnVMpde1io+voAtql7j\r\n"  \
+-"4sRhLrjD7o3THtwRbDa2diCvpq0Sq23Ng2LMYoXsOxoL/RQK3iN7UKxV3MKPEr0w\r\n"  \
+-"XQS+kKQqiT2bsfrjnWMVHZtUOMpm6FNqcdGm/Rss3vKda2lcKl8kUnq/ylc1+QbB\r\n"  \
+-"G6A6tUvQcr2ZyWfVg+mM5XkhTrOOXus2OLikb4WwEtJTJRNE0f+yPODSUz0/vT57\r\n"  \
+-"ApH0CnB80bYJshYHPHHymOtleAB8KSYtqm75g/YNobjnjB6cm4HkW3OZRVIl6fYY\r\n"  \
+-"n20NRVA1Vjs6GAROr4NqW4k/+LofY9y0LLDE+p0oIEKXIsIvhPr39swxSA==\r\n"      \
+-"-----END CERTIFICATE-----\r\n"
++#define TEST_CA_CRT_RSA_SHA256                                             \
++    "-----BEGIN CERTIFICATE-----\r\n"                                      \
++    "MIIDQTCCAimgAwIBAgIBAzANBgkqhkiG9w0BAQsFADA7MQswCQYDVQQGEwJOTDER\r\n" \
++    "MA8GA1UECgwIUG9sYXJTU0wxGTAXBgNVBAMMEFBvbGFyU1NMIFRlc3QgQ0EwHhcN\r\n" \
++    "MTkwMjEwMTQ0NDAwWhcNMjkwMjEwMTQ0NDAwWjA7MQswCQYDVQQGEwJOTDERMA8G\r\n" \
++    "A1UECgwIUG9sYXJTU0wxGTAXBgNVBAMMEFBvbGFyU1NMIFRlc3QgQ0EwggEiMA0G\r\n" \
++    "CSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDA3zf8F7vglp0/ht6WMn1EpRagzSHx\r\n" \
++    "mdTs6st8GFgIlKXsm8WL3xoemTiZhx57wI053zhdcHgH057Zk+i5clHFzqMwUqny\r\n" \
++    "50BwFMtEonILwuVA+T7lpg6z+exKY8C4KQB0nFc7qKUEkHHxvYPZP9al4jwqj+8n\r\n" \
++    "YMPGn8u67GB9t+aEMr5P+1gmIgNb1LTV+/Xjli5wwOQuvfwu7uJBVcA0Ln0kcmnL\r\n" \
++    "R7EUQIN9Z/SG9jGr8XmksrUuEvmEF/Bibyc+E1ixVA0hmnM3oTDPb5Lc9un8rNsu\r\n" \
++    "KNF+AksjoBXyOGVkCeoMbo4bF6BxyLObyavpw/LPh5aPgAIynplYb6LVAgMBAAGj\r\n" \
++    "UDBOMAwGA1UdEwQFMAMBAf8wHQYDVR0OBBYEFLRa5KWz3tJS9rnVppUP6z68x/3/\r\n" \
++    "MB8GA1UdIwQYMBaAFLRa5KWz3tJS9rnVppUP6z68x/3/MA0GCSqGSIb3DQEBCwUA\r\n" \
++    "A4IBAQA4qFSCth2q22uJIdE4KGHJsJjVEfw2/xn+MkTvCMfxVrvmRvqCtjE4tKDl\r\n" \
++    "oK4MxFOek07oDZwvtAT9ijn1hHftTNS7RH9zd/fxNpfcHnMZXVC4w4DNA1fSANtW\r\n" \
++    "5sY1JB5Je9jScrsLSS+mAjyv0Ow3Hb2Bix8wu7xNNrV5fIf7Ubm+wt6SqEBxu3Kb\r\n" \
++    "+EfObAT4huf3czznhH3C17ed6NSbXwoXfby7stWUDeRJv08RaFOykf/Aae7bY5PL\r\n" \
++    "yTVrkAnikMntJ9YI+hNNYt3inqq11A5cN0+rVTst8UKCxzQ4GpvroSwPKTFkbMw4\r\n" \
++    "/anT1dVxr/BtwJfiESoK3/4CeXR1\r\n"                                     \
++    "-----END CERTIFICATE-----\r\n"
+ 
+ const char   mbedtls_test_ca_crt_rsa[]   = TEST_CA_CRT_RSA_SHA256;
+ const size_t mbedtls_test_ca_crt_rsa_len = sizeof( mbedtls_test_ca_crt_rsa );
+@@ -183,36 +182,36 @@ static const char mbedtls_test_ca_crt_rsa_sha1[] = TEST_CA_CRT_RSA_SHA1;
+ #endif
+ 
+ const char mbedtls_test_ca_key_rsa[] =
+-"-----BEGIN RSA PRIVATE KEY-----\r\n"
+-"Proc-Type: 4,ENCRYPTED\r\n"
+-"DEK-Info: DES-EDE3-CBC,A8A95B05D5B7206B\r\n"
+-"\r\n"
+-"9Qd9GeArejl1GDVh2lLV1bHt0cPtfbh5h/5zVpAVaFpqtSPMrElp50Rntn9et+JA\r\n"
+-"7VOyboR+Iy2t/HU4WvA687k3Bppe9GwKHjHhtl//8xFKwZr3Xb5yO5JUP8AUctQq\r\n"
+-"Nb8CLlZyuUC+52REAAthdWgsX+7dJO4yabzUcQ22Tp9JSD0hiL43BlkWYUNK3dAo\r\n"
+-"PZlmiptjnzVTjg1MxsBSydZinWOLBV8/JQgxSPo2yD4uEfig28qbvQ2wNIn0pnAb\r\n"
+-"GxnSAOazkongEGfvcjIIs+LZN9gXFhxcOh6kc4Q/c99B7QWETwLLkYgZ+z1a9VY9\r\n"
+-"gEU7CwCxYCD+h9hY6FPmsK0/lC4O7aeRKpYq00rPPxs6i7phiexg6ax6yTMmArQq\r\n"
+-"QmK3TAsJm8V/J5AWpLEV6jAFgRGymGGHnof0DXzVWZidrcZJWTNuGEX90nB3ee2w\r\n"
+-"PXJEFWKoD3K3aFcSLdHYr3mLGxP7H9ThQai9VsycxZKS5kwvBKQ//YMrmFfwPk8x\r\n"
+-"vTeY4KZMaUrveEel5tWZC94RSMKgxR6cyE1nBXyTQnDOGbfpNNgBKxyKbINWoOJU\r\n"
+-"WJZAwlsQn+QzCDwpri7+sV1mS3gBE6UY7aQmnmiiaC2V3Hbphxct/en5QsfDOt1X\r\n"
+-"JczSfpRWLlbPznZg8OQh/VgCMA58N5DjOzTIK7sJJ5r+94ZBTCpgAMbF588f0NTR\r\n"
+-"KCe4yrxGJR7X02M4nvD4IwOlpsQ8xQxZtOSgXv4LkxvdU9XJJKWZ/XNKJeWztxSe\r\n"
+-"Z1vdTc2YfsDBA2SEv33vxHx2g1vqtw8SjDRT2RaQSS0QuSaMJimdOX6mTOCBKk1J\r\n"
+-"9Q5mXTrER+/LnK0jEmXsBXWA5bqqVZIyahXSx4VYZ7l7w/PHiUDtDgyRhMMKi4n2\r\n"
+-"iQvQcWSQTjrpnlJbca1/DkpRt3YwrvJwdqb8asZU2VrNETh5x0QVefDRLFiVpif/\r\n"
+-"tUaeAe/P1F8OkS7OIZDs1SUbv/sD2vMbhNkUoCms3/PvNtdnvgL4F0zhaDpKCmlT\r\n"
+-"P8vx49E7v5CyRNmED9zZg4o3wmMqrQO93PtTug3Eu9oVx1zPQM1NVMyBa2+f29DL\r\n"
+-"1nuTCeXdo9+ni45xx+jAI4DCwrRdhJ9uzZyC6962H37H6D+5naNvClFR1s6li1Gb\r\n"
+-"nqPoiy/OBsEx9CaDGcqQBp5Wme/3XW+6z1ISOx+igwNTVCT14mHdBMbya0eIKft5\r\n"
+-"X+GnwtgEMyCYyyWuUct8g4RzErcY9+yW9Om5Hzpx4zOuW4NPZgPDTgK+t2RSL/Yq\r\n"
+-"rE1njrgeGYcVeG3f+OftH4s6fPbq7t1A5ZgUscbLMBqr9tK+OqygR4EgKBPsH6Cz\r\n"
+-"L6zlv/2RV0qAHvVuDJcIDIgwY5rJtINEm32rhOeFNJwZS5MNIC1czXZx5//ugX7l\r\n"
+-"I4sy5nbVhwSjtAk8Xg5dZbdTZ6mIrb7xqH+fdakZor1khG7bC2uIwibD3cSl2XkR\r\n"
+-"wN48lslbHnqqagr6Xm1nNOSVl8C/6kbJEsMpLhAezfRtGwvOucoaE+WbeUNolGde\r\n"
+-"P/eQiddSf0brnpiLJRh7qZrl9XuqYdpUqnoEdMAfotDOID8OtV7gt8a48ad8VPW2\r\n"
+-"-----END RSA PRIVATE KEY-----\r\n";
++    "-----BEGIN RSA PRIVATE KEY-----\r\n"
++    "Proc-Type: 4,ENCRYPTED\r\n"
++    "DEK-Info: DES-EDE3-CBC,A8A95B05D5B7206B\r\n"
++    "\r\n"
++    "9Qd9GeArejl1GDVh2lLV1bHt0cPtfbh5h/5zVpAVaFpqtSPMrElp50Rntn9et+JA\r\n"
++    "7VOyboR+Iy2t/HU4WvA687k3Bppe9GwKHjHhtl//8xFKwZr3Xb5yO5JUP8AUctQq\r\n"
++    "Nb8CLlZyuUC+52REAAthdWgsX+7dJO4yabzUcQ22Tp9JSD0hiL43BlkWYUNK3dAo\r\n"
++    "PZlmiptjnzVTjg1MxsBSydZinWOLBV8/JQgxSPo2yD4uEfig28qbvQ2wNIn0pnAb\r\n"
++    "GxnSAOazkongEGfvcjIIs+LZN9gXFhxcOh6kc4Q/c99B7QWETwLLkYgZ+z1a9VY9\r\n"
++    "gEU7CwCxYCD+h9hY6FPmsK0/lC4O7aeRKpYq00rPPxs6i7phiexg6ax6yTMmArQq\r\n"
++    "QmK3TAsJm8V/J5AWpLEV6jAFgRGymGGHnof0DXzVWZidrcZJWTNuGEX90nB3ee2w\r\n"
++    "PXJEFWKoD3K3aFcSLdHYr3mLGxP7H9ThQai9VsycxZKS5kwvBKQ//YMrmFfwPk8x\r\n"
++    "vTeY4KZMaUrveEel5tWZC94RSMKgxR6cyE1nBXyTQnDOGbfpNNgBKxyKbINWoOJU\r\n"
++    "WJZAwlsQn+QzCDwpri7+sV1mS3gBE6UY7aQmnmiiaC2V3Hbphxct/en5QsfDOt1X\r\n"
++    "JczSfpRWLlbPznZg8OQh/VgCMA58N5DjOzTIK7sJJ5r+94ZBTCpgAMbF588f0NTR\r\n"
++    "KCe4yrxGJR7X02M4nvD4IwOlpsQ8xQxZtOSgXv4LkxvdU9XJJKWZ/XNKJeWztxSe\r\n"
++    "Z1vdTc2YfsDBA2SEv33vxHx2g1vqtw8SjDRT2RaQSS0QuSaMJimdOX6mTOCBKk1J\r\n"
++    "9Q5mXTrER+/LnK0jEmXsBXWA5bqqVZIyahXSx4VYZ7l7w/PHiUDtDgyRhMMKi4n2\r\n"
++    "iQvQcWSQTjrpnlJbca1/DkpRt3YwrvJwdqb8asZU2VrNETh5x0QVefDRLFiVpif/\r\n"
++    "tUaeAe/P1F8OkS7OIZDs1SUbv/sD2vMbhNkUoCms3/PvNtdnvgL4F0zhaDpKCmlT\r\n"
++    "P8vx49E7v5CyRNmED9zZg4o3wmMqrQO93PtTug3Eu9oVx1zPQM1NVMyBa2+f29DL\r\n"
++    "1nuTCeXdo9+ni45xx+jAI4DCwrRdhJ9uzZyC6962H37H6D+5naNvClFR1s6li1Gb\r\n"
++    "nqPoiy/OBsEx9CaDGcqQBp5Wme/3XW+6z1ISOx+igwNTVCT14mHdBMbya0eIKft5\r\n"
++    "X+GnwtgEMyCYyyWuUct8g4RzErcY9+yW9Om5Hzpx4zOuW4NPZgPDTgK+t2RSL/Yq\r\n"
++    "rE1njrgeGYcVeG3f+OftH4s6fPbq7t1A5ZgUscbLMBqr9tK+OqygR4EgKBPsH6Cz\r\n"
++    "L6zlv/2RV0qAHvVuDJcIDIgwY5rJtINEm32rhOeFNJwZS5MNIC1czXZx5//ugX7l\r\n"
++    "I4sy5nbVhwSjtAk8Xg5dZbdTZ6mIrb7xqH+fdakZor1khG7bC2uIwibD3cSl2XkR\r\n"
++    "wN48lslbHnqqagr6Xm1nNOSVl8C/6kbJEsMpLhAezfRtGwvOucoaE+WbeUNolGde\r\n"
++    "P/eQiddSf0brnpiLJRh7qZrl9XuqYdpUqnoEdMAfotDOID8OtV7gt8a48ad8VPW2\r\n"
++    "-----END RSA PRIVATE KEY-----\r\n";
+ const size_t mbedtls_test_ca_key_rsa_len = sizeof( mbedtls_test_ca_key_rsa );
+ 
+ const char mbedtls_test_ca_pwd_rsa[] = "PolarSSLTest";
+@@ -220,112 +219,113 @@ const size_t mbedtls_test_ca_pwd_rsa_len = sizeof( mbedtls_test_ca_pwd_rsa ) - 1
+ 
+ /* tests/data_files/server2.crt */
+ const char mbedtls_test_srv_crt_rsa[] =
+-"-----BEGIN CERTIFICATE-----\r\n"
+-"MIIDNzCCAh+gAwIBAgIBAjANBgkqhkiG9w0BAQUFADA7MQswCQYDVQQGEwJOTDER\r\n"
+-"MA8GA1UECgwIUG9sYXJTU0wxGTAXBgNVBAMMEFBvbGFyU1NMIFRlc3QgQ0EwHhcN\r\n"
+-"MTEwMjEyMTQ0NDA2WhcNMjEwMjEyMTQ0NDA2WjA0MQswCQYDVQQGEwJOTDERMA8G\r\n"
+-"A1UECgwIUG9sYXJTU0wxEjAQBgNVBAMMCWxvY2FsaG9zdDCCASIwDQYJKoZIhvcN\r\n"
+-"AQEBBQADggEPADCCAQoCggEBAMFNo93nzR3RBNdJcriZrA545Do8Ss86ExbQWuTN\r\n"
+-"owCIp+4ea5anUrSQ7y1yej4kmvy2NKwk9XfgJmSMnLAofaHa6ozmyRyWvP7BBFKz\r\n"
+-"NtSj+uGxdtiQwWG0ZlI2oiZTqqt0Xgd9GYLbKtgfoNkNHC1JZvdbJXNG6AuKT2kM\r\n"
+-"tQCQ4dqCEGZ9rlQri2V5kaHiYcPNQEkI7mgM8YuG0ka/0LiqEQMef1aoGh5EGA8P\r\n"
+-"hYvai0Re4hjGYi/HZo36Xdh98yeJKQHFkA4/J/EwyEoO79bex8cna8cFPXrEAjya\r\n"
+-"HT4P6DSYW8tzS1KW2BGiLICIaTla0w+w3lkvEcf36hIBMJcCAwEAAaNNMEswCQYD\r\n"
+-"VR0TBAIwADAdBgNVHQ4EFgQUpQXoZLjc32APUBJNYKhkr02LQ5MwHwYDVR0jBBgw\r\n"
+-"FoAUtFrkpbPe0lL2udWmlQ/rPrzH/f8wDQYJKoZIhvcNAQEFBQADggEBAAFzC0rF\r\n"
+-"y6De8WMcdgQrEw3AhBHFjzqnxZw1ene4IBSC7lTw8rBSy3jOWQdPUWn+0y/pCeeF\r\n"
+-"kti6sevFdl1hLemGtd4q+T9TKEKGg3ND4ARfB5AUZZ9uEHq8WBkiwus5clGS17Qd\r\n"
+-"dS/TOisB59tQruLx1E1bPLtBKyqk4koC5WAULJwfpswGSyWJTpYwIpxcWE3D2tBu\r\n"
+-"UB6MZfXZFzWmWEOyKbeoXjXe8GBCGgHLywvYDsGQ36HSGtEsAvR2QaTLSxWYcfk1\r\n"
+-"fbDn4jSWkb4yZy1r01UEigFQtONieGwRFaUqEcFJHJvEEGVgh9keaVlOj2vrwf5r\r\n"
+-"4mN4lW7gLdenN6g=\r\n"
+-"-----END CERTIFICATE-----\r\n";
++    "-----BEGIN CERTIFICATE-----\r\n"
++    "MIIDTzCCAjegAwIBAgICEkMwDQYJKoZIhvcNAQELBQAwOzELMAkGA1UEBhMCTkwx\r\n"
++    "ETAPBgNVBAoMCFBvbGFyU1NMMRkwFwYDVQQDDBBQb2xhclNTTCBUZXN0IENBMB4X\r\n"
++    "DTIxMDUyNTE2NDM0NVoXDTIzMDUyNTE2NDM0NVowWzELMAkGA1UEBhMCREUxETAP\r\n"
++    "BgNVBAgMCFNhYXJsYW5kMQswCQYDVQQHDAJTQjEOMAwGA1UECgwFQ0lTUEExHDAa\r\n"
++    "BgNVBAMME0JzdEd3IENvbmZpZ1NlcnZpY2UwggEiMA0GCSqGSIb3DQEBAQUAA4IB\r\n"
++    "DwAwggEKAoIBAQDNDu9NkqgyMwl3TBDEFJ+tOOqCqpVGcoG2xqjrwqnOgOmZ5362\r\n"
++    "zCHxRzKOlAlnchvHOPNnUfpbcgo4icc5KxTPc7fcRczyDtK8eW+8ZLRKar+Xa85S\r\n"
++    "JM2KqIW/dMZH8oREa3KphZr0V1hcSanZNabxrlJaGnbKJDN/xnJLNxUm5vQ0v6M8\r\n"
++    "mYPc4T6cesGPpqczTOvxEnNHgNAcTFt1ILryjfKaFRKMIC3MTLFccf0jRH1EzabQ\r\n"
++    "ru8ijSE4WPvryoR/1kPAkySyXZQWsfnNdABPA0L014gY7SgzWjyw87YpNhLHa8mk\r\n"
++    "5bWzMo2Ew5H36tmJlx76Zbc514j8wYkFDA19AgMBAAGjPTA7MB0GA1UdDgQWBBRz\r\n"
++    "ec5cKVwKYH0HMpk/xam9IKl/zDAJBgNVHRMEAjAAMA8GA1UdEQQIMAaHBMCosjEw\r\n"
++    "DQYJKoZIhvcNAQELBQADggEBAGKZakNNqgTkW0SaSRzPAP93n16cwUS+gr+t5cph\r\n"
++    "vA1JaqxUfEVPpQI6GZP3QMpu2omrNtyXf8ZYHBZUQyIt7ivWVFlrvt8iLGrsK3FG\r\n"
++    "lSjh/AkHc+PuXTYj9Jg/hiHQA/Ew8bQ2EpfvU5Y5RCRIBO9NymNoJDEnqERYztRu\r\n"
++    "GB72D1euIeaKuYAYDN370D6wOV+iKswQ63RiYXsga7HHctnIvd1WfZihObCZYYUM\r\n"
++    "RT/iYdmscKRhGPyd2p5EE1IMEyKHyIw0sOf8rWpDpbLde00erwdTPMLbC1jUyoZp\r\n"
++    "JmBunKKTVZxWlrqGxVuBOYhlfmqPrXDlAgkbEdJITIxksSo=\r\n"
++    "-----END CERTIFICATE-----\r\n";
+ const size_t mbedtls_test_srv_crt_rsa_len = sizeof( mbedtls_test_srv_crt_rsa );
+ 
+ /* tests/data_files/server2.key */
+ const char mbedtls_test_srv_key_rsa[] =
+-"-----BEGIN RSA PRIVATE KEY-----\r\n"
+-"MIIEpAIBAAKCAQEAwU2j3efNHdEE10lyuJmsDnjkOjxKzzoTFtBa5M2jAIin7h5r\r\n"
+-"lqdStJDvLXJ6PiSa/LY0rCT1d+AmZIycsCh9odrqjObJHJa8/sEEUrM21KP64bF2\r\n"
+-"2JDBYbRmUjaiJlOqq3ReB30Zgtsq2B+g2Q0cLUlm91slc0boC4pPaQy1AJDh2oIQ\r\n"
+-"Zn2uVCuLZXmRoeJhw81ASQjuaAzxi4bSRr/QuKoRAx5/VqgaHkQYDw+Fi9qLRF7i\r\n"
+-"GMZiL8dmjfpd2H3zJ4kpAcWQDj8n8TDISg7v1t7HxydrxwU9esQCPJodPg/oNJhb\r\n"
+-"y3NLUpbYEaIsgIhpOVrTD7DeWS8Rx/fqEgEwlwIDAQABAoIBAQCXR0S8EIHFGORZ\r\n"
+-"++AtOg6eENxD+xVs0f1IeGz57Tjo3QnXX7VBZNdj+p1ECvhCE/G7XnkgU5hLZX+G\r\n"
+-"Z0jkz/tqJOI0vRSdLBbipHnWouyBQ4e/A1yIJdlBtqXxJ1KE/ituHRbNc4j4kL8Z\r\n"
+-"/r6pvwnTI0PSx2Eqs048YdS92LT6qAv4flbNDxMn2uY7s4ycS4Q8w1JXnCeaAnYm\r\n"
+-"WYI5wxO+bvRELR2Mcz5DmVnL8jRyml6l6582bSv5oufReFIbyPZbQWlXgYnpu6He\r\n"
+-"GTc7E1zKYQGG/9+DQUl/1vQuCPqQwny0tQoX2w5tdYpdMdVm+zkLtbajzdTviJJa\r\n"
+-"TWzL6lt5AoGBAN86+SVeJDcmQJcv4Eq6UhtRr4QGMiQMz0Sod6ettYxYzMgxtw28\r\n"
+-"CIrgpozCc+UaZJLo7UxvC6an85r1b2nKPCLQFaggJ0H4Q0J/sZOhBIXaoBzWxveK\r\n"
+-"nupceKdVxGsFi8CDy86DBfiyFivfBj+47BbaQzPBj7C4rK7UlLjab2rDAoGBAN2u\r\n"
+-"AM2gchoFiu4v1HFL8D7lweEpi6ZnMJjnEu/dEgGQJFjwdpLnPbsj4c75odQ4Gz8g\r\n"
+-"sw9lao9VVzbusoRE/JGI4aTdO0pATXyG7eG1Qu+5Yc1YGXcCrliA2xM9xx+d7f+s\r\n"
+-"mPzN+WIEg5GJDYZDjAzHG5BNvi/FfM1C9dOtjv2dAoGAF0t5KmwbjWHBhcVqO4Ic\r\n"
+-"BVvN3BIlc1ue2YRXEDlxY5b0r8N4XceMgKmW18OHApZxfl8uPDauWZLXOgl4uepv\r\n"
+-"whZC3EuWrSyyICNhLY21Ah7hbIEBPF3L3ZsOwC+UErL+dXWLdB56Jgy3gZaBeW7b\r\n"
+-"vDrEnocJbqCm7IukhXHOBK8CgYEAwqdHB0hqyNSzIOGY7v9abzB6pUdA3BZiQvEs\r\n"
+-"3LjHVd4HPJ2x0N8CgrBIWOE0q8+0hSMmeE96WW/7jD3fPWwCR5zlXknxBQsfv0gP\r\n"
+-"3BC5PR0Qdypz+d+9zfMf625kyit4T/hzwhDveZUzHnk1Cf+IG7Q+TOEnLnWAWBED\r\n"
+-"ISOWmrUCgYAFEmRxgwAc/u+D6t0syCwAYh6POtscq9Y0i9GyWk89NzgC4NdwwbBH\r\n"
+-"4AgahOxIxXx2gxJnq3yfkJfIjwf0s2DyP0kY2y6Ua1OeomPeY9mrIS4tCuDQ6LrE\r\n"
+-"TB6l9VGoxJL4fyHnZb8L5gGvnB1bbD8cL6YPaDiOhcRseC9vBiEuVg==\r\n"
+-"-----END RSA PRIVATE KEY-----\r\n";
++    "-----BEGIN PRIVATE KEY-----\r\n"
++    "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDNDu9NkqgyMwl3\r\n"
++    "TBDEFJ+tOOqCqpVGcoG2xqjrwqnOgOmZ5362zCHxRzKOlAlnchvHOPNnUfpbcgo4\r\n"
++    "icc5KxTPc7fcRczyDtK8eW+8ZLRKar+Xa85SJM2KqIW/dMZH8oREa3KphZr0V1hc\r\n"
++    "SanZNabxrlJaGnbKJDN/xnJLNxUm5vQ0v6M8mYPc4T6cesGPpqczTOvxEnNHgNAc\r\n"
++    "TFt1ILryjfKaFRKMIC3MTLFccf0jRH1EzabQru8ijSE4WPvryoR/1kPAkySyXZQW\r\n"
++    "sfnNdABPA0L014gY7SgzWjyw87YpNhLHa8mk5bWzMo2Ew5H36tmJlx76Zbc514j8\r\n"
++    "wYkFDA19AgMBAAECggEATq0RQekoIYKVejE0KZdkIHk6+QFsHshmXnNgcnyQ3Et3\r\n"
++    "1XYNlyNBTqqriirgZNFSOSDvus+oSBe8Ni8ewh92b5YNkDUzyhfH4UqShWz6A6dr\r\n"
++    "dTSGx9uZBT9debTbMtWoy/uR1dsONfuhSl91DILaV9YzgKCwvSQgokDIr3Ul53N7\r\n"
++    "gnIWOVUNwIjSGz67pnye8VXRfQD/idQVo0hA5f4VNt66ymGcQjCK92QneYWyzahR\r\n"
++    "51a5Xxk27aMxgq8LvH9v5EYlSlBPNYFrZQtbWX6RVj6ej6aj8C0TXUt/FkiHei/w\r\n"
++    "vT60IgcrK3VomZYkl4rpBiaGZKRuMB3pStcuD6p23QKBgQDuIm4P35sGQUmpChEH\r\n"
++    "l9L8H9pX/QYwqwS37aprvAmVcSnFqRm7Na/wrFZSuoK2++im2i+We/HHNFJaGSRK\r\n"
++    "ybV+m0WY0NgvYul4JGQTJCQHbQ77UJ4lTCGtqJJSICfkfhNbWNWdQ7mK8fjCkcKK\r\n"
++    "fr3nRGXbUlVh671dAEL+jDXEjwKBgQDccT/8f2cjyRMk2QeafxvJJqQeyFYL1E+M\r\n"
++    "TWaHWwdfxYCf5LB2xK4Gfppv4eO+8nUPbE+vAMARRPCENsThZT58br2XK6jSFg6g\r\n"
++    "YCYrwtEHE6h226WvVQFxQNkorox+9hqXxwtcyFVBXDwqEeVIxvPymG+9PvKBOFrO\r\n"
++    "d3R7rkBLMwKBgEWBxTBa6wvrWI2/g3L87LdssLWIBBuGf20UMO8bRozZKAEqt3j+\r\n"
++    "ValhFB03lVnFs4WoH8XDzbGAYx0rQ32U3KXkum69XqyOKWlI7fDsVpvYSEwwnshy\r\n"
++    "LU5b6sGP4zT9W7cI+ejaULjuodZg5zC3h8SOIVDf+k4HmhEgN23HDRafAoGBAIsx\r\n"
++    "n3uqXtAD2Wi8+cYeWMcs9RjS2zJg/1HSVdlGK2PX7B4KYzq7ej9zlcTr18jsg+oX\r\n"
++    "NEGGscC1zUFO7AZ+zXP44RIhaVouv1GZJMEhJKfZS9ixXO9XN6/xiK3dea15bNVF\r\n"
++    "w/D0NpEs0nimECdiKQuYIYZXxvy9Pul8GDs4jjRtAoGBAKUQh3Qjz+pH/czHDIvF\r\n"
++    "+noCjsKgF7lYuPdPSz1Viw/HnTfmTMUzPGJ3tbm7maTvB01NEA1KoZitAMvwK6Vn\r\n"
++    "L+ZG3zK7HZpOziaqOiG8x3d+3Czrnr0+5AJ1lFFCFzcalVge+RFdBuxxWak7K14Z\r\n"
++    "82x/VO0Xyq2fUmcyBiw5q1n1\r\n"
++    "-----END PRIVATE KEY-----\r\n";
+ const size_t mbedtls_test_srv_key_rsa_len = sizeof( mbedtls_test_srv_key_rsa );
+ 
+ /* tests/data_files/cli-rsa-sha256.crt */
+ const char mbedtls_test_cli_crt_rsa[] =
+-"-----BEGIN CERTIFICATE-----\r\n"
+-"MIIDPzCCAiegAwIBAgIBBDANBgkqhkiG9w0BAQsFADA7MQswCQYDVQQGEwJOTDER\r\n"
+-"MA8GA1UECgwIUG9sYXJTU0wxGTAXBgNVBAMMEFBvbGFyU1NMIFRlc3QgQ0EwHhcN\r\n"
+-"MTEwMjEyMTQ0NDA2WhcNMjEwMjEyMTQ0NDA2WjA8MQswCQYDVQQGEwJOTDERMA8G\r\n"
+-"A1UECgwIUG9sYXJTU0wxGjAYBgNVBAMMEVBvbGFyU1NMIENsaWVudCAyMIIBIjAN\r\n"
+-"BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyHTEzLn5tXnpRdkUYLB9u5Pyax6f\r\n"
+-"M60Nj4o8VmXl3ETZzGaFB9X4J7BKNdBjngpuG7fa8H6r7gwQk4ZJGDTzqCrSV/Uu\r\n"
+-"1C93KYRhTYJQj6eVSHD1bk2y1RPD0hrt5kPqQhTrdOrA7R/UV06p86jt0uDBMHEw\r\n"
+-"MjDV0/YI0FZPRo7yX/k9Z5GIMC5Cst99++UMd//sMcB4j7/Cf8qtbCHWjdmLao5v\r\n"
+-"4Jv4EFbMs44TFeY0BGbH7vk2DmqV9gmaBmf0ZXH4yqSxJeD+PIs1BGe64E92hfx/\r\n"
+-"/DZrtenNLQNiTrM9AM+vdqBpVoNq0qjU51Bx5rU2BXcFbXvI5MT9TNUhXwIDAQAB\r\n"
+-"o00wSzAJBgNVHRMEAjAAMB0GA1UdDgQWBBRxoQBzckAvVHZeM/xSj7zx3WtGITAf\r\n"
+-"BgNVHSMEGDAWgBS0WuSls97SUva51aaVD+s+vMf9/zANBgkqhkiG9w0BAQsFAAOC\r\n"
+-"AQEAlHabem2Tu69VUN7EipwnQn1dIHdgvT5i+iQHpSxY1crPnBbAeSdAXwsVEqLQ\r\n"
+-"gOOIAQD5VIITNuoGgo4i+4OpNh9u7ZkpRHla+/swsfrFWRRbBNP5Bcu74AGLstwU\r\n"
+-"zM8gIkBiyfM1Q1qDQISV9trlCG6O8vh8dp/rbI3rfzo99BOHXgFCrzXjCuW4vDsF\r\n"
+-"r+Dao26bX3sJ6UnEWg1H3o2x6PpUcvQ36h71/bz4TEbbUUEpe02V4QWuL+wrhHJL\r\n"
+-"U7o3SVE3Og7jPF8sat0a50YUWhwEFI256m02KAXLg89ueUyYKEr6rNwhcvXJpvU9\r\n"
+-"giIVvd0Sbjjnn7NC4VDbcXV8vw==\r\n"
+-"-----END CERTIFICATE-----\r\n";
++    "-----BEGIN CERTIFICATE-----\r\n"
++    "MIIDPzCCAiegAwIBAgIBBDANBgkqhkiG9w0BAQsFADA7MQswCQYDVQQGEwJOTDER\r\n"
++    "MA8GA1UECgwIUG9sYXJTU0wxGTAXBgNVBAMMEFBvbGFyU1NMIFRlc3QgQ0EwHhcN\r\n"
++    "MTkwMjEwMTQ0NDA2WhcNMjkwMjEwMTQ0NDA2WjA8MQswCQYDVQQGEwJOTDERMA8G\r\n"
++    "A1UECgwIUG9sYXJTU0wxGjAYBgNVBAMMEVBvbGFyU1NMIENsaWVudCAyMIIBIjAN\r\n"
++    "BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyHTEzLn5tXnpRdkUYLB9u5Pyax6f\r\n"
++    "M60Nj4o8VmXl3ETZzGaFB9X4J7BKNdBjngpuG7fa8H6r7gwQk4ZJGDTzqCrSV/Uu\r\n"
++    "1C93KYRhTYJQj6eVSHD1bk2y1RPD0hrt5kPqQhTrdOrA7R/UV06p86jt0uDBMHEw\r\n"
++    "MjDV0/YI0FZPRo7yX/k9Z5GIMC5Cst99++UMd//sMcB4j7/Cf8qtbCHWjdmLao5v\r\n"
++    "4Jv4EFbMs44TFeY0BGbH7vk2DmqV9gmaBmf0ZXH4yqSxJeD+PIs1BGe64E92hfx/\r\n"
++    "/DZrtenNLQNiTrM9AM+vdqBpVoNq0qjU51Bx5rU2BXcFbXvI5MT9TNUhXwIDAQAB\r\n"
++    "o00wSzAJBgNVHRMEAjAAMB0GA1UdDgQWBBRxoQBzckAvVHZeM/xSj7zx3WtGITAf\r\n"
++    "BgNVHSMEGDAWgBS0WuSls97SUva51aaVD+s+vMf9/zANBgkqhkiG9w0BAQsFAAOC\r\n"
++    "AQEAXidv1d4pLlBiKWED95rMycBdgDcgyNqJxakFkRfRyA2y1mlyTn7uBXRkNLY5\r\n"
++    "ZFzK82GCjk2Q2OD4RZSCPAJJqLpHHU34t71ciffvy2KK81YvrxczRhMAE64i+qna\r\n"
++    "yP3Td2XuWJR05PVPoSemsNELs9gWttdnYy3ce+EY2Y0n7Rsi7982EeLIAA7H6ca4\r\n"
++    "2Es/NUH//JZJT32OP0doMxeDRA+vplkKqTLLWf7dX26LIriBkBaRCgR5Yv9LBPFc\r\n"
++    "NOtpzu/LbrY7QFXKJMI+JXDudCsOn8KCmiA4d6Emisqfh3V3485l7HEQNcvLTxlD\r\n"
++    "6zDQyi0/ykYUYZkwQTK1N2Nvlw==\r\n"
++    "-----END CERTIFICATE-----\r\n";
+ const size_t mbedtls_test_cli_crt_rsa_len = sizeof( mbedtls_test_cli_crt_rsa );
+ 
+ /* tests/data_files/cli-rsa.key */
+ const char mbedtls_test_cli_key_rsa[] =
+-"-----BEGIN RSA PRIVATE KEY-----\r\n"
+-"MIIEpAIBAAKCAQEAyHTEzLn5tXnpRdkUYLB9u5Pyax6fM60Nj4o8VmXl3ETZzGaF\r\n"
+-"B9X4J7BKNdBjngpuG7fa8H6r7gwQk4ZJGDTzqCrSV/Uu1C93KYRhTYJQj6eVSHD1\r\n"
+-"bk2y1RPD0hrt5kPqQhTrdOrA7R/UV06p86jt0uDBMHEwMjDV0/YI0FZPRo7yX/k9\r\n"
+-"Z5GIMC5Cst99++UMd//sMcB4j7/Cf8qtbCHWjdmLao5v4Jv4EFbMs44TFeY0BGbH\r\n"
+-"7vk2DmqV9gmaBmf0ZXH4yqSxJeD+PIs1BGe64E92hfx//DZrtenNLQNiTrM9AM+v\r\n"
+-"dqBpVoNq0qjU51Bx5rU2BXcFbXvI5MT9TNUhXwIDAQABAoIBAGdNtfYDiap6bzst\r\n"
+-"yhCiI8m9TtrhZw4MisaEaN/ll3XSjaOG2dvV6xMZCMV+5TeXDHOAZnY18Yi18vzz\r\n"
+-"4Ut2TnNFzizCECYNaA2fST3WgInnxUkV3YXAyP6CNxJaCmv2aA0yFr2kFVSeaKGt\r\n"
+-"ymvljNp2NVkvm7Th8fBQBO7I7AXhz43k0mR7XmPgewe8ApZOG3hstkOaMvbWAvWA\r\n"
+-"zCZupdDjZYjOJqlA4eEA4H8/w7F83r5CugeBE8LgEREjLPiyejrU5H1fubEY+h0d\r\n"
+-"l5HZBJ68ybTXfQ5U9o/QKA3dd0toBEhhdRUDGzWtjvwkEQfqF1reGWj/tod/gCpf\r\n"
+-"DFi6X0ECgYEA4wOv/pjSC3ty6TuOvKX2rOUiBrLXXv2JSxZnMoMiWI5ipLQt+RYT\r\n"
+-"VPafL/m7Dn6MbwjayOkcZhBwk5CNz5A6Q4lJ64Mq/lqHznRCQQ2Mc1G8eyDF/fYL\r\n"
+-"Ze2pLvwP9VD5jTc2miDfw+MnvJhywRRLcemDFP8k4hQVtm8PMp3ZmNECgYEA4gz7\r\n"
+-"wzObR4gn8ibe617uQPZjWzUj9dUHYd+in1gwBCIrtNnaRn9I9U/Q6tegRYpii4ys\r\n"
+-"c176NmU+umy6XmuSKV5qD9bSpZWG2nLFnslrN15Lm3fhZxoeMNhBaEDTnLT26yoi\r\n"
+-"33gp0mSSWy94ZEqipms+ULF6sY1ZtFW6tpGFoy8CgYAQHhnnvJflIs2ky4q10B60\r\n"
+-"ZcxFp3rtDpkp0JxhFLhiizFrujMtZSjYNm5U7KkgPVHhLELEUvCmOnKTt4ap/vZ0\r\n"
+-"BxJNe1GZH3pW6SAvGDQpl9sG7uu/vTFP+lCxukmzxB0DrrDcvorEkKMom7ZCCRvW\r\n"
+-"KZsZ6YeH2Z81BauRj218kQKBgQCUV/DgKP2985xDTT79N08jUo3hTP5MVYCCuj/+\r\n"
+-"UeEw1TvZcx3LJby7P6Xad6a1/BqveaGyFKIfEFIaBUBItk801sDDpDaYc4gL00Xc\r\n"
+-"7lFuBHOZkxJYlss5QrGpuOEl9ZwUt5IrFLBdYaKqNHzNVC1pCPfb/JyH6Dr2HUxq\r\n"
+-"gxUwAQKBgQCcU6G2L8AG9d9c0UpOyL1tMvFe5Ttw0KjlQVdsh1MP6yigYo9DYuwu\r\n"
+-"bHFVW2r0dBTqegP2/KTOxKzaHfC1qf0RGDsUoJCNJrd1cwoCLG8P2EF4w3OBrKqv\r\n"
+-"8u4ytY0F+Vlanj5lm3TaoHSVF1+NWPyOTiwevIECGKwSxvlki4fDAA==\r\n"
+-"-----END RSA PRIVATE KEY-----\r\n";
++    "-----BEGIN RSA PRIVATE KEY-----\r\n"
++    "MIIEpAIBAAKCAQEAyHTEzLn5tXnpRdkUYLB9u5Pyax6fM60Nj4o8VmXl3ETZzGaF\r\n"
++    "B9X4J7BKNdBjngpuG7fa8H6r7gwQk4ZJGDTzqCrSV/Uu1C93KYRhTYJQj6eVSHD1\r\n"
++    "bk2y1RPD0hrt5kPqQhTrdOrA7R/UV06p86jt0uDBMHEwMjDV0/YI0FZPRo7yX/k9\r\n"
++    "Z5GIMC5Cst99++UMd//sMcB4j7/Cf8qtbCHWjdmLao5v4Jv4EFbMs44TFeY0BGbH\r\n"
++    "7vk2DmqV9gmaBmf0ZXH4yqSxJeD+PIs1BGe64E92hfx//DZrtenNLQNiTrM9AM+v\r\n"
++    "dqBpVoNq0qjU51Bx5rU2BXcFbXvI5MT9TNUhXwIDAQABAoIBAGdNtfYDiap6bzst\r\n"
++    "yhCiI8m9TtrhZw4MisaEaN/ll3XSjaOG2dvV6xMZCMV+5TeXDHOAZnY18Yi18vzz\r\n"
++    "4Ut2TnNFzizCECYNaA2fST3WgInnxUkV3YXAyP6CNxJaCmv2aA0yFr2kFVSeaKGt\r\n"
++    "ymvljNp2NVkvm7Th8fBQBO7I7AXhz43k0mR7XmPgewe8ApZOG3hstkOaMvbWAvWA\r\n"
++    "zCZupdDjZYjOJqlA4eEA4H8/w7F83r5CugeBE8LgEREjLPiyejrU5H1fubEY+h0d\r\n"
++    "l5HZBJ68ybTXfQ5U9o/QKA3dd0toBEhhdRUDGzWtjvwkEQfqF1reGWj/tod/gCpf\r\n"
++    "DFi6X0ECgYEA4wOv/pjSC3ty6TuOvKX2rOUiBrLXXv2JSxZnMoMiWI5ipLQt+RYT\r\n"
++    "VPafL/m7Dn6MbwjayOkcZhBwk5CNz5A6Q4lJ64Mq/lqHznRCQQ2Mc1G8eyDF/fYL\r\n"
++    "Ze2pLvwP9VD5jTc2miDfw+MnvJhywRRLcemDFP8k4hQVtm8PMp3ZmNECgYEA4gz7\r\n"
++    "wzObR4gn8ibe617uQPZjWzUj9dUHYd+in1gwBCIrtNnaRn9I9U/Q6tegRYpii4ys\r\n"
++    "c176NmU+umy6XmuSKV5qD9bSpZWG2nLFnslrN15Lm3fhZxoeMNhBaEDTnLT26yoi\r\n"
++    "33gp0mSSWy94ZEqipms+ULF6sY1ZtFW6tpGFoy8CgYAQHhnnvJflIs2ky4q10B60\r\n"
++    "ZcxFp3rtDpkp0JxhFLhiizFrujMtZSjYNm5U7KkgPVHhLELEUvCmOnKTt4ap/vZ0\r\n"
++    "BxJNe1GZH3pW6SAvGDQpl9sG7uu/vTFP+lCxukmzxB0DrrDcvorEkKMom7ZCCRvW\r\n"
++    "KZsZ6YeH2Z81BauRj218kQKBgQCUV/DgKP2985xDTT79N08jUo3hTP5MVYCCuj/+\r\n"
++    "UeEw1TvZcx3LJby7P6Xad6a1/BqveaGyFKIfEFIaBUBItk801sDDpDaYc4gL00Xc\r\n"
++    "7lFuBHOZkxJYlss5QrGpuOEl9ZwUt5IrFLBdYaKqNHzNVC1pCPfb/JyH6Dr2HUxq\r\n"
++    "gxUwAQKBgQCcU6G2L8AG9d9c0UpOyL1tMvFe5Ttw0KjlQVdsh1MP6yigYo9DYuwu\r\n"
++    "bHFVW2r0dBTqegP2/KTOxKzaHfC1qf0RGDsUoJCNJrd1cwoCLG8P2EF4w3OBrKqv\r\n"
++    "8u4ytY0F+Vlanj5lm3TaoHSVF1+NWPyOTiwevIECGKwSxvlki4fDAA==\r\n"
++    "-----END RSA PRIVATE KEY-----\r\n";
+ const size_t mbedtls_test_cli_key_rsa_len = sizeof( mbedtls_test_cli_key_rsa );
+ #endif /* MBEDTLS_RSA_C */
+ 
+diff --git a/lib/libmbedtls/sub.mk b/lib/libmbedtls/sub.mk
+index 66d61b74..dbec5cb7 100644
+--- a/lib/libmbedtls/sub.mk
++++ b/lib/libmbedtls/sub.mk
+@@ -37,6 +37,7 @@ SRCS_CRYPTO += md.c
+ SRCS_CRYPTO += md2.c
+ SRCS_CRYPTO += md4.c
+ SRCS_CRYPTO += md5.c
++# Note: does not exist in new version anymore (md_wrap.c)
+ SRCS_CRYPTO += md_wrap.c
+ SRCS_CRYPTO += memory_buffer_alloc.c
+ SRCS_CRYPTO += nist_kw.c
+@@ -88,9 +89,23 @@ SRCS_TLS += ssl_srv.c
+ SRCS_TLS += ssl_ticket.c
+ SRCS_TLS += ssl_tls.c
+ 
++ifeq ($(CFG_BSTGW_FIREWALL),y)
++	# added although missing in OP-TEE sub.mk
++	SRCS_CRYPTO += chachapoly.c
++	# TODO: parts of ssl_tls.c moved into ssl_msg.c in newer versions
++	#SRCS_TLS += ssl_msg.c # WARNING: this one was missing (and is alos missing in OP-TEE's makefile)
++endif
++
+ srcs-y += $(addprefix mbedtls/library/, $(SRCS_CRYPTO))
++
++#ifeq ($(CFG_BSTGW_FIREWALL),y)
++#srcs-y += $(addprefix mbedtls/library/, $(SRCS_X509))
++#srcs-y += $(addprefix mbedtls/library/, $(SRCS_TLS))
++#else
++# TODO: I do not understand yet when this condition is satisfied and when not
+ srcs-$(sm-$(ta-target)) += $(addprefix mbedtls/library/, $(SRCS_X509))
+ srcs-$(sm-$(ta-target)) += $(addprefix mbedtls/library/, $(SRCS_TLS))
++#endif
+ 
+ cflags-lib-y += -Wno-redundant-decls
+ cflags-lib-y += -Wno-switch-default
+diff --git a/mk/config.mk b/mk/config.mk
+index 8e638c01..fa57e350 100644
+--- a/mk/config.mk
++++ b/mk/config.mk
+@@ -434,6 +434,18 @@ CFG_SYSTEM_PTA ?= y
+ # world OS.
+ CFG_DEVICE_ENUM_PTA ?= y
+ 
++# Enable Bastion Gateway firewall (core libs, memory pools and co.)
++CFG_BSTGW_FIREWALL ?= n
++#CFG_BSTGW_VNIC_IRQ ?= 65
++CFG_SECLOAK_EMULATION ?= n
++CFG_BSTGW_VNIC ?= n
++
++# Enable the pseudo TA for network packet filtering.
++CFG_TZR_FIREWALL_PTA ?= y
++
++# Enable the memory sharing demo PTA (TZR).
++CFG_TZR_MEM_DEMO_PTA ?= y
++
+ # Define the number of cores per cluster used in calculating core position.
+ # The cluster number is shifted by this value and added to the core ID,
+ # so its value represents log2(cores/cluster).
+diff --git a/scripts/symbolize.py b/scripts/symbolize.py
+index 206e8207..abd6afae 100755
+--- a/scripts/symbolize.py
++++ b/scripts/symbolize.py
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env python3
++#!/usr/bin/env python3.8
+ # SPDX-License-Identifier: BSD-2-Clause
+ #
+ # Copyright (c) 2017, Linaro Limited
+diff --git a/ta/ta.mk b/ta/ta.mk
+index b961663a..43736f25 100644
+--- a/ta/ta.mk
++++ b/ta/ta.mk
+@@ -12,6 +12,10 @@ include mk/$(COMPILER_$(sm)).mk
+ # Config flags from mk/config.mk
+ #
+ 
++ifeq ($(CFG_BSTGW_FIREWALL),y)
++$(sm)-platform-cppflags	+= -D__TZR_TA__
++endif
++
+ ifeq ($(CFG_TA_MBEDTLS_SELF_TEST),y)
+ $(sm)-platform-cppflags += -DMBEDTLS_SELF_TEST
+ endif

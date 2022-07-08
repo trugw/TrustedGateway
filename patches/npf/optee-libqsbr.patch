@@ -1,0 +1,531 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..1aee782
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,2 @@
++tzr-out/
++nw-out/
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..3302abe
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,48 @@
++export V ?= 0
++
++OUTPUT_DIR := $(CURDIR)/tzr-out
++
++# If _HOST or _TA specific compilers are not specified, then use CROSS_COMPILE
++HOST_CROSS_COMPILE ?= $(CROSS_COMPILE)
++TA_CROSS_COMPILE ?= $(CROSS_COMPILE)
++
++.PHONY: all
++all: qsbr qsbr-tzr prepare-for-rootfs
++
++.PHONY: clean
++clean: qsbr-clean qsbr-tzr-clean prepare-for-rootfs-clean
++
++qsbr: CROSS_COMPILE="$(HOST_CROSS_COMPILE)"
++qsbr: export CC      ?= $(CROSS_COMPILE)gcc
++qsbr: export LD      ?= $(CROSS_COMPILE)ld
++qsbr: export AR      ?= $(CROSS_COMPILE)ar
++qsbr: export NM      ?= $(CROSS_COMPILE)nm
++qsbr: export OBJCOPY ?= $(CROSS_COMPILE)objcopy
++qsbr: export OBJDUMP ?= $(CROSS_COMPILE)objdump
++qsbr: export READELF ?= $(CROSS_COMPILE)readelf
++
++qsbr: export CFLAGS  += -Wall -I$(TEEC_EXPORT)/include
++qsbr: export LDFLAGS += -lteec -L$(TEEC_EXPORT)/lib
++
++qsbr:
++	$(MAKE) -C src LIBDIR=`pwd`/nw-out/ lib || exit -1;
++	$(MAKE) -C src LIBDIR=. DESTDIR=`pwd`/nw-out install || exit -1;
++
++qsbr-clean:
++	$(MAKE) -C src clean || exit -1;
++
++qsbr-tzr:
++	$(MAKE) -C src -f TZRMakefile CROSS_COMPILE="$(TA_CROSS_COMPILE)" LDFLAGS="" || exit -1;
++
++qsbr-tzr-clean:
++	$(MAKE) -C src -f TZRMakefile clean || exit -1;
++
++prepare-for-rootfs: qsbr-tzr
++	@echo "Copying example TLIB to $(OUTPUT_DIR)..."
++	@mkdir -p $(OUTPUT_DIR)
++	@mkdir -p $(OUTPUT_DIR)/tlib
++	cp -pr src/tzr-build/*.a $(OUTPUT_DIR)/tlib/; \
++
++prepare-for-rootfs-clean:
++	@rm -rf $(OUTPUT_DIR)/tlib
++	@rmdir --ignore-fail-on-non-empty $(OUTPUT_DIR) || test ! -e $(OUTPUT_DIR)
+diff --git a/src/.gitignore b/src/.gitignore
+new file mode 100644
+index 0000000..c88d149
+--- /dev/null
++++ b/src/.gitignore
+@@ -0,0 +1,7 @@
++.*.cmd
++.*.d
++*.a
++*.o
++*.lo
++*.la
++.libs/
+diff --git a/src/Makefile b/src/Makefile
+index 18ba071..681d894 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -23,8 +23,8 @@ CFLAGS+=	-Wmissing-declarations -Wredundant-decls -Wnested-externs
+ CFLAGS+=	-Wshadow -Wcast-qual -Wcast-align -Wwrite-strings
+ CFLAGS+=	-Wold-style-definition
+ CFLAGS+=	-Wsuggest-attribute=noreturn -Wjump-misses-init
+-CFLAGS+=	-Wduplicated-cond -Wmisleading-indentation -Wnull-dereference
+-CFLAGS+=	-Wduplicated-branches -Wrestrict
++#CFLAGS+=	-Wduplicated-cond -Wmisleading-indentation -Wnull-dereference
++#CFLAGS+=	-Wduplicated-branches -Wrestrict
+ 
+ ifeq ($(MAKECMDGOALS),tests)
+ DEBUG=		1
+@@ -55,10 +55,11 @@ obj: $(OBJS)
+ lib: $(LIB).la
+ 
+ %.lo: %.c
+-	libtool --mode=compile --tag CC $(CC) $(CFLAGS) -c $<
++	libtool --mode=compile --tag CC "$(CC)" $(CFLAGS) -c $<
+ 
+ $(LIB).la: $(shell echo $(OBJS) | sed 's/\.o/\.lo/g')
+-	libtool --mode=link --tag CC $(CC) $(LDFLAGS) -o $@ $(notdir $^)
++	#libtool --mode=link --tag CC $(CC) $(LDFLAGS) -o $@ $(notdir $^)
++	CC=$(CC) libtool --mode=link --tag CC false $(LDFLAGS) -o $@ $(notdir $^)
+ 
+ install/%.la: %.la
+ 	mkdir -p $(ILIBDIR)
+diff --git a/src/TZRMakefile b/src/TZRMakefile
+new file mode 100644
+index 0000000..5beb1c5
+--- /dev/null
++++ b/src/TZRMakefile
+@@ -0,0 +1,37 @@
++CFG_TEE_TA_LOG_LEVEL ?= 4
++CPPFLAGS += -DCFG_TEE_TA_LOG_LEVEL=$(CFG_TEE_TA_LOG_LEVEL)
++
++# separate tzr object files into separate directory
++O=tzr-build
++
++# qsbr specific stuff -----
++CFLAGS+=	-DTZR_OPTEE
++CPPFLAGS+=	-DTZR_OPTEE
++
++CFLAGS+=	-DTZR_TA_OPTEE
++CPPFLAGS+=	-DTZR_TA_OPTEE
++
++CFLAGS+=	-DNDEBUG
++CPPFLAGS+=	-DNDEBUG
++
++#INCS=		ebr.h qsbr.h gc.h
++#OBJS=		ebr.o qsbr.o gc.o
++
++## fixes -----
++### those are usually extern "C" { and }, but compiler complained about it
++CFLAGS+=	-D__BEGIN_DECLS=
++CFLAGS+=	-D__END_DECLS=
++
++## / -----
++# / -----
++
++# The name of the static library
++LIBNAME=$(O)/libsqbr-tzr
++
++-include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
++
++ifeq ($(wildcard $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk), )
++clean:
++	@echo 'Note: $$(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk not found, cannot clean TA'
++	@echo 'Note: TA_DEV_KIT_DIR=$(TA_DEV_KIT_DIR)'
++endif
+diff --git a/src/ebr.c b/src/ebr.c
+index 40fd5fe..21bb64b 100644
+--- a/src/ebr.c
++++ b/src/ebr.c
+@@ -27,37 +27,49 @@
+  * See the comments in the ebr_sync() function for detailed explanation.
+  */
+ 
+-#include <sys/queue.h>
+ #include <stdlib.h>
+ #include <stdbool.h>
+ #include <string.h>
+ #include <time.h>
++#ifdef TZR_PTA_OPTEE
++#include <kernel/tee_time.h>
++#endif
++
++#ifndef TZR_OPTEE
+ #include <errno.h>
++#endif /* !TZR_OPTEE */
++#ifndef TZR_OPTEE
+ #include <pthread.h>
+ #include <sched.h>
++#else
++
++#ifdef TZR_PTA_OPTEE
++#include <bstgw/worker_storage.h>
++#include <pthwrap.h>
++// currently not alignment support
++int posix_memalign(void **memptr, size_t alignment, size_t size) ;
++int posix_memalign(void **memptr, size_t alignment __unused, size_t size) {
++	if (memptr == NULL) return EINVAL; // TODO: I think the outcome in that case is unspecified
++	if ( (*memptr = malloc(size)) == NULL) return ENOMEM;
++	return 0;
++}
++#endif /* TZR_PTA_OPTEE */
+ 
++#endif /* !TZR_OPTEE */
+ #include "ebr.h"
+ #include "utils.h"
+ 
+ #define	ACTIVE_FLAG		(0x80000000U)
+ 
+-typedef struct ebr_tls {
+-	/*
+-	 * - A local epoch counter for each thread.
+-	 * - The epoch counter may have the "active" flag set.
+-	 * - Thread list entry (pointer).
+-	 */
+-	unsigned		local_epoch;
+-	LIST_ENTRY(ebr_tls)	entry;
+-} ebr_tls_t;
+-
+ struct ebr {
+ 	/*
+ 	 * - There is a global epoch counter which can be 0, 1 or 2.
+ 	 * - TLS with a list of the registered threads.
+ 	 */
+ 	unsigned		global_epoch;
++#ifndef TZR_OPTEE
+ 	pthread_key_t		tls_key;
++#endif
+ 	pthread_mutex_t		lock;
+ 	LIST_HEAD(, ebr_tls)	list;
+ };
+@@ -70,14 +82,18 @@ ebr_create(void)
+ 
+ 	ret = posix_memalign((void **)&ebr, CACHE_LINE_SIZE, sizeof(ebr_t));
+ 	if (ret != 0) {
++#ifndef TZR_OPTEE
+ 		errno = ret;
++#endif /* !TZR_OPTEE */
+ 		return NULL;
+ 	}
+ 	memset(ebr, 0, sizeof(ebr_t));
++#ifndef TZR_OPTEE
+ 	if (pthread_key_create(&ebr->tls_key, free) != 0) {
+ 		free(ebr);
+ 		return NULL;
+ 	}
++#endif
+ 	pthread_mutex_init(&ebr->lock, NULL);
+ 	return ebr;
+ }
+@@ -85,7 +101,23 @@ ebr_create(void)
+ void
+ ebr_destroy(ebr_t *ebr)
+ {
++#ifndef TZR_OPTEE
+ 	pthread_key_delete(ebr->tls_key);
++#else
++	// go through existing ebr_tls worker storages and free() their values !
++	// (compare to per_worker / percpu storage)
++
++	ebr_tls_t *t, *next;
++
++	t = LIST_FIRST(&ebr->list);
++	while (t) {
++		next = LIST_NEXT(t, entry);
++		set_worker_epoch(NULL);
++		free(t);
++		t = next;
++	}
++#endif
++
+ 	pthread_mutex_destroy(&ebr->lock);
+ 	free(ebr);
+ }
+@@ -100,17 +132,27 @@ ebr_register(ebr_t *ebr)
+ {
+ 	ebr_tls_t *t;
+ 
++#ifndef TZR_OPTEE
+ 	t = pthread_getspecific(ebr->tls_key);
++#else
++	t = get_worker_epoch();
++#endif
+ 	if (__predict_false(t == NULL)) {
+ 		int ret;
+ 
+ 		ret = posix_memalign((void **)&t,
+ 		    CACHE_LINE_SIZE, sizeof(ebr_tls_t));
+ 		if (ret != 0) {
++#ifndef TZR_OPTEE
+ 			errno = ret;
++#endif /* !TZR_OPTEE */
+ 			return -1;
+ 		}
++#ifndef TZR_OPTEE
+ 		pthread_setspecific(ebr->tls_key, t);
++#else
++		set_worker_epoch(t);
++#endif
+ 	}
+ 	memset(t, 0, sizeof(ebr_tls_t));
+ 
+@@ -125,11 +167,19 @@ ebr_unregister(ebr_t *ebr)
+ {
+ 	ebr_tls_t *t;
+ 
++#ifndef TZR_OPTEE
+ 	t = pthread_getspecific(ebr->tls_key);
++#else
++	t = get_worker_epoch();
++#endif
+ 	if (t == NULL) {
+ 		return;
+ 	}
++#ifndef TZR_OPTEE
+ 	pthread_setspecific(ebr->tls_key, NULL);
++#else
++	set_worker_epoch(NULL);
++#endif
+ 
+ 	pthread_mutex_lock(&ebr->lock);
+ 	LIST_REMOVE(t, entry);
+@@ -146,7 +196,11 @@ ebr_enter(ebr_t *ebr)
+ 	ebr_tls_t *t;
+ 	unsigned epoch;
+ 
++#ifndef TZR_OPTEE
+ 	t = pthread_getspecific(ebr->tls_key);
++#else
++	t = get_worker_epoch();
++#endif
+ 	ASSERT(t != NULL);
+ 
+ 	/*
+@@ -167,7 +221,11 @@ ebr_exit(ebr_t *ebr)
+ {
+ 	ebr_tls_t *t;
+ 
++#ifndef TZR_OPTEE
+ 	t = pthread_getspecific(ebr->tls_key);
++#else
++	t = get_worker_epoch();
++#endif
+ 	ASSERT(t != NULL);
+ 
+ 	/*
+@@ -272,7 +330,9 @@ ebr_gc_epoch(ebr_t *ebr)
+ void
+ ebr_full_sync(ebr_t *ebr, unsigned msec_retry)
+ {
++#ifndef TZR_PTA_OPTEE
+ 	const struct timespec dtime = { 0, msec_retry * 1000 * 1000 };
++#endif /* !TZR_PTA_OTPEE */
+ 	const unsigned target_epoch = ebr_staging_epoch(ebr);
+ 	unsigned epoch, count = SPINLOCK_BACKOFF_MIN;
+ wait:
+@@ -280,9 +340,19 @@ wait:
+ 		if (count < SPINLOCK_BACKOFF_MAX) {
+ 			SPINLOCK_BACKOFF(count);
+ 		} else if (msec_retry) {
++#ifndef TZR_PTA_OPTEE
+ 			(void)nanosleep(&dtime, NULL);
++#else
++			// TODO: sample trusted monotonic clock
++			tee_time_wait(msec_retry);
++			// TODO: sample; check (t_end - t_begin) >= msec_retry
++#endif
+ 		} else {
++#ifndef TZR_PTA_OPTEE
+ 			sched_yield();
++#else
++			tee_time_wait(0); // TODO
++#endif
+ 		}
+ 	}
+ 	if (target_epoch != epoch) {
+@@ -301,7 +371,11 @@ ebr_incrit_p(ebr_t *ebr)
+ {
+ 	ebr_tls_t *t;
+ 
++#ifndef TZR_OPTEE
+ 	t = pthread_getspecific(ebr->tls_key);
++#else
++	t = get_worker_epoch();
++#endif
+ 	ASSERT(t != NULL);
+ 
+ 	return (t->local_epoch & ACTIVE_FLAG) != 0;
+diff --git a/src/ebr.h b/src/ebr.h
+index a99c9dc..4db6a23 100644
+--- a/src/ebr.h
++++ b/src/ebr.h
+@@ -8,7 +8,18 @@
+ #ifndef	_EBR_H_
+ #define	_EBR_H_
+ 
+-__BEGIN_DECLS
++#include <sys/queue.h>
++#include <stdbool.h>
++
++typedef struct ebr_tls {
++	/*
++	 * - A local epoch counter for each thread.
++	 * - The epoch counter may have the "active" flag set.
++	 * - Thread list entry (pointer).
++	 */
++	unsigned		local_epoch;
++	LIST_ENTRY(ebr_tls)	entry;
++} ebr_tls_t;
+ 
+ struct ebr;
+ typedef struct ebr ebr_t;
+@@ -28,6 +39,4 @@ unsigned	ebr_gc_epoch(ebr_t *);
+ void		ebr_full_sync(ebr_t *, unsigned);
+ bool		ebr_incrit_p(ebr_t *);
+ 
+-__END_DECLS
+-
+ #endif
+diff --git a/src/gc.c b/src/gc.c
+index 80570ba..30a90fe 100644
+--- a/src/gc.c
++++ b/src/gc.c
+@@ -15,6 +15,9 @@
+ #include <stdbool.h>
+ #include <inttypes.h>
+ #include <time.h>
++#ifdef TZR_PTA_OPTEE
++#include <kernel/tee_time.h>
++#endif
+ 
+ #include "gc.h"
+ #include "ebr.h"
+@@ -173,7 +176,9 @@ next:
+ void
+ gc_full(gc_t *gc, unsigned msec_retry)
+ {
++#ifndef TZR_PTA_OPTEE
+ 	const struct timespec dtime = { 0, msec_retry * 1000 * 1000 };
++#endif /* !TZR_PTA_OPTEE */
+ 	unsigned count = SPINLOCK_BACKOFF_MIN;
+ 	bool done;
+ again:
+@@ -200,7 +205,13 @@ again:
+ 		if (count < SPINLOCK_BACKOFF_MAX) {
+ 			SPINLOCK_BACKOFF(count);
+ 		} else {
++#ifndef TZR_PTA_OPTEE
+ 			(void)nanosleep(&dtime, NULL);
++#else
++			// TODO: sample trusted monotonic clock
++			tee_time_wait(msec_retry);
++			// TODO: sample; check (t_end - t_begin) >= msec_retry
++#endif
+ 		}
+ 		goto again;
+ 	}
+diff --git a/src/qsbr.c b/src/qsbr.c
+index 9b670fb..795de62 100644
+--- a/src/qsbr.c
++++ b/src/qsbr.c
+@@ -29,17 +29,38 @@
+ #include <sys/queue.h>
+ #include <stdlib.h>
+ #include <string.h>
++#ifndef TZR_OPTEE
+ #include <errno.h>
++#endif /* !TZR_OPTEE */
++#ifndef TZR_OPTEE
+ #include <pthread.h>
++#else
++
++#ifdef TZR_PTA_OPTEE
++#include <pthwrap.h>
++// currently not alignment support
++int posix_memalign(void **memptr, size_t alignment, size_t size) ;
++int posix_memalign(void **memptr, size_t alignment __unused, size_t size) {
++	if (memptr == NULL) return EINVAL; // TODO: I think the outcome in that case is unspecified
++	if ( (*memptr = malloc(size)) == NULL) return ENOMEM;
++	return 0;
++}
++#endif /* TZR_PTA_OPTEE */
++
++#endif /* !TZR_OPTEE */
+ 
+ #include "qsbr.h"
+ #include "utils.h"
+ 
++#ifndef static_assert
++#define static_assert _Static_assert
++#endif /* !static_assert */
++
+ /*
+  * FIXME: handle the epoch overflow on 32-bit systems; not a problem
+  * on 64-bit systems.
+  */
+-static_assert(sizeof(qsbr_epoch_t) == 8, "expected 64-bit counter");
++//static_assert(sizeof(qsbr_epoch_t) == 8, "expected 64-bit counter");
+ 
+ typedef struct qsbr_tls {
+ 	/*
+@@ -68,7 +89,9 @@ qsbr_create(void)
+ 
+ 	ret = posix_memalign((void **)&qs, CACHE_LINE_SIZE, sizeof(qsbr_t));
+ 	if (ret != 0) {
++#ifndef TZR_OPTEE
+ 		errno = ret;
++#endif /* !TZR_OPTEE */
+ 		return NULL;
+ 	}
+ 	memset(qs, 0, sizeof(qsbr_t));
+@@ -105,7 +128,9 @@ qsbr_register(qsbr_t *qs)
+ 		ret = posix_memalign((void **)&t,
+ 		    CACHE_LINE_SIZE, sizeof(qsbr_tls_t));
+ 		if (ret != 0) {
++#ifndef TZR_OPTEE
+ 			errno = ret;
++#endif /* !TZR_OPTEE */
+ 			return -1;
+ 		}
+ 		pthread_setspecific(qs->tls_key, t);
+diff --git a/src/sub.mk b/src/sub.mk
+new file mode 100644
+index 0000000..668a569
+--- /dev/null
++++ b/src/sub.mk
+@@ -0,0 +1,10 @@
++global-incdirs-y += include
++
++#incdirs-y += external/include
++
++srcs-y += ebr.c
++srcs-y += qsbr.c
++srcs-y += gc.c
++
++# To remove a certain compiler flag, add a line like this
++#cflags-template_ta.c-y += -Wno-strict-prototypes
+diff --git a/src/utils.h b/src/utils.h
+index db4b2aa..61520b8 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -76,6 +76,8 @@ again:
+ #define	SPINLOCK_BACKOFF_MAX	128
+ #if defined(__x86_64__) || defined(__i386__)
+ #define SPINLOCK_BACKOFF_HOOK	__asm volatile("pause" ::: "memory")
++#elif defined(__aarch64__) || defined(__arm__)
++#define SPINLOCK_BACKOFF_HOOK	__asm volatile("yield" ::: "memory")
+ #else
+ #define SPINLOCK_BACKOFF_HOOK
+ #endif

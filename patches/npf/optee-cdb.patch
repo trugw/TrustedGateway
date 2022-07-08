@@ -1,0 +1,727 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..1aee782
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,2 @@
++tzr-out/
++nw-out/
+diff --git a/Makefile b/Makefile
+index 5a015bf..b400c98 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,27 +1,48 @@
+-PROJ=	libcdb
++export V ?= 0
+ 
+-all:
+-	make -C src
++OUTPUT_DIR := $(CURDIR)/tzr-out
+ 
+-lib:
+-	make -C src lib
++# If _HOST or _TA specific compilers are not specified, then use CROSS_COMPILE
++HOST_CROSS_COMPILE ?= $(CROSS_COMPILE)
++TA_CROSS_COMPILE ?= $(CROSS_COMPILE)
+ 
+-install:
+-	make -C src install
+-	make -C man install
++.PHONY: all
++all: cdb cdb-tzr prepare-for-rootfs
+ 
+-rpm:
+-	mkdir -p SOURCES && tar czpvf SOURCES/$(PROJ).tar.gz src man Makefile
+-	rpmbuild -ba -v --define "_topdir ${PWD}" SPECS/$(PROJ).spec
+-	@ echo && printf "\x1B[32mRPM packages:\033[0m\n" && ls -1 RPMS/*
++.PHONY: clean
++clean: cdb-clean cdb-tzr-clean prepare-for-rootfs-clean
+ 
+-deb:
+-	cp -R src ./SOURCES
+-	dpkg-buildpackage -rfakeroot -us -uc -b
+-	@ echo && printf "\x1B[32mDEB packages:\033[0m\n" && ls -1 ../*.deb
++cdb: CROSS_COMPILE="$(HOST_CROSS_COMPILE)"
++cdb: export CC      ?= $(CROSS_COMPILE)gcc
++cdb: export LD      ?= $(CROSS_COMPILE)ld
++cdb: export AR      ?= $(CROSS_COMPILE)ar
++cdb: export NM      ?= $(CROSS_COMPILE)nm
++cdb: export OBJCOPY ?= $(CROSS_COMPILE)objcopy
++cdb: export OBJDUMP ?= $(CROSS_COMPILE)objdump
++cdb: export READELF ?= $(CROSS_COMPILE)readelf
+ 
+-clean:
+-	make -C src clean
+-	rm -rf BUILD BUILDROOT RPMS SOURCES SRPMS
++cdb: export CFLAGS  += -Wall -I$(TEEC_EXPORT)/include
++cdb: export LDFLAGS += -lteec -L$(TEEC_EXPORT)/lib
+ 
+-.PHONY: all lib install rpm deb clean
++cdb:
++	$(MAKE) -C src LIBDIR=`pwd`/nw-out/ lib || exit -1;
++	$(MAKE) -C src LIBDIR=. DESTDIR=`pwd`/nw-out install || exit -1;
++
++cdb-clean:
++	$(MAKE) -C src clean || exit -1;
++
++cdb-tzr:
++	$(MAKE) -C src -f TZRMakefile CROSS_COMPILE="$(TA_CROSS_COMPILE)" LDFLAGS="" || exit -1;
++
++cdb-tzr-clean:
++	$(MAKE) -C src -f TZRMakefile clean || exit -1;
++
++prepare-for-rootfs: cdb-tzr
++	@echo "Copying example TLIB to $(OUTPUT_DIR)..."
++	@mkdir -p $(OUTPUT_DIR)
++	@mkdir -p $(OUTPUT_DIR)/tlib
++	cp -pr src/tzr-build/*.a $(OUTPUT_DIR)/tlib/; \
++
++prepare-for-rootfs-clean:
++	@rm -rf $(OUTPUT_DIR)/tlib
++	@rmdir --ignore-fail-on-non-empty $(OUTPUT_DIR) || test ! -e $(OUTPUT_DIR)
+diff --git a/src/.gitignore b/src/.gitignore
+new file mode 100644
+index 0000000..c88d149
+--- /dev/null
++++ b/src/.gitignore
+@@ -0,0 +1,7 @@
++.*.cmd
++.*.d
++*.a
++*.o
++*.lo
++*.la
++.libs/
+diff --git a/src/Makefile b/src/Makefile
+index f0f4da0..33428b0 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -5,7 +5,7 @@
+ PROJ=		cdb
+ 
+ UNAME:=		$(shell uname)
+-CFLAGS+=	-std=c11 -O2 -g -Wall -Wextra -Werror
++CFLAGS+=	-std=c11 -O2 -g -Wall -Wextra #-Werror
+ ifneq ($(UNAME), FreeBSD)
+ CFLAGS+=	-D_POSIX_C_SOURCE=200809L
+ endif
+@@ -37,10 +37,15 @@ obj: $(OBJS)
+ lib: $(LIB).la
+ 
+ %.lo: %.c
+-	libtool --mode=compile --tag CC $(CC) $(CFLAGS) -c $<
++	libtool --mode=compile --tag CC "$(CC)" $(CFLAGS) -c $<
+ 
+ $(LIB).la: $(shell echo $(OBJS) | sed 's/\.o/\.lo/g')
+-	libtool --mode=link --tag CC $(CC) $(LDFLAGS) -o $@ $(notdir $^)
++	# caution: CC=$(CC) prevents spacing bug when eval is called on it
++	# caution: libtool link-mode ignores the given compile command (`false' as dummy proof);
++	#		it hard-codes gcc use; patched it to use CC instead if CC is already pre-defined;
++	CC=$(CC) libtool --mode=link --tag CC false $(LDFLAGS) -o $@ $(notdir $^)
++	#toolchains/aarch64/bin/aarch64-linux-gnu-gcc -shared -fPIC -DPIC .libs/nvlist.o .libs/nvpair.o .libs/cnvlist.o .libs/dnvlist.o .libs/msgio.o   -lteec -L/home/fabian/Projects/optee-debian-hikey960/build/../optee_client/out/export/usr//lib -Wl,-soname -Wl,libnv.so.1 -o .libs/libnv.so.1.0.0
++
+ 
+ install/%.la: %.la
+ 	mkdir -p $(ILIBDIR)
+diff --git a/src/TZRMakefile b/src/TZRMakefile
+new file mode 100644
+index 0000000..2b9d42b
+--- /dev/null
++++ b/src/TZRMakefile
+@@ -0,0 +1,43 @@
++CFG_TEE_TA_LOG_LEVEL ?= 4
++CPPFLAGS += -DCFG_TEE_TA_LOG_LEVEL=$(CFG_TEE_TA_LOG_LEVEL)
++
++# separate tzr object files into separate directory
++O=tzr-build
++
++# cdb specific stuff -----
++CFLAGS+=	-DTZR_OPTEE
++CPPFLAGS+=	-DTZR_OPTEE
++
++CFLAGS+=	-DTZR_TA_OPTEE
++CPPFLAGS+=	-DTZR_TA_OPTEE
++
++CFLAGS +=	-D__RCSID\(x\)=
++CPPFLAGS +=	-D__RCSID\(x\)=
++CFLAGS+=	-DNDEBUG
++CPPFLAGS+=	-DNDEBUG
++
++##
++#CFLAGS+=	-DENOMEM=\(12\)
++#CFLAGS+=	-DEEXIST=\(17\)
++
++#INCS=		cdbr.h cdbw.h
++#OBJS=		cdbr.o cdbw.o mi_vector_hash.o
++
++## fixes -----
++### those are usually extern "C" { and }, but compiler complained about it
++CFLAGS+=	-D__BEGIN_DECLS=
++CFLAGS+=	-D__END_DECLS=
++
++## / -----
++# / -----
++
++# The name of the static library
++LIBNAME=$(O)/libcdb-tzr
++
++-include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
++
++ifeq ($(wildcard $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk), )
++clean:
++	@echo 'Note: $$(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk not found, cannot clean TA'
++	@echo 'Note: TA_DEV_KIT_DIR=$(TA_DEV_KIT_DIR)'
++endif
+diff --git a/src/cdb_impl.h b/src/cdb_impl.h
+index 1857022..dbf3c24 100644
+--- a/src/cdb_impl.h
++++ b/src/cdb_impl.h
+@@ -7,7 +7,7 @@
+ 
+ #if !defined(__NetBSD__) && !defined(__FreeBSD__)
+ 
+-#define	__predict_false(exp)	__builtin_expect((exp) != 0, 0)
++#define	__predict_false(exp)	__builtin_expect(!!(exp), 0)
+ 
+ static inline uint32_t
+ le32dec(const void *buf)
+diff --git a/src/cdbr.c b/src/cdbr.c
+index efb3fe4..55aa0ce 100644
+--- a/src/cdbr.c
++++ b/src/cdbr.c
+@@ -38,11 +38,6 @@
+ #include <sys/cdefs.h>
+ __RCSID("$NetBSD: cdbr.c,v 1.1 2013/12/11 01:24:08 joerg Exp $");
+ 
+-#if 0
+-#if !defined(_KERNEL) && !defined(_STANDALONE)
+-#include "namespace.h"
+-#endif
+-#endif
+ 
+ #if !HAVE_NBTOOL_CONFIG_H
+ #if __NetBSD__
+@@ -55,7 +50,7 @@ __RCSID("$NetBSD: cdbr.c,v 1.1 2013/12/11 01:24:08 joerg Exp $");
+ #if defined(__NetBSD__) || defined(__FreeBSD__)
+ #include <sys/endian.h>
+ #else
+-#include <endian.h>
++#include <newlib/endian.h>
+ #endif
+ #endif
+ 
+@@ -67,18 +62,24 @@ __RCSID("$NetBSD: cdbr.c,v 1.1 2013/12/11 01:24:08 joerg Exp $");
+ #define SET_ERRNO(val)
+ #define malloc(size) kmem_alloc(size, KM_SLEEP)
+ #define free(ptr) kmem_free(ptr, sizeof(struct cdbr))
++
+ #else
+-#include <sys/mman.h>
+-#include <sys/stat.h>
+-#include <cdbr.h>
+-#include <errno.h>
+-#include <fcntl.h>
++
++#include "cdbr.h"
+ #include <inttypes.h>
+ #include <limits.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
+-#define SET_ERRNO(val) errno = (val)
++#define SET_ERRNO(val)
++
++#ifdef TZR_TA_OPTEE
++#include <tee_api.h>
++
++#define malloc(size) TEE_Malloc(size, TEE_MALLOC_FILL_ZERO)
++#define free(ptr) 	 TEE_Free(ptr)
++#endif
++
+ #endif
+ 
+ #include "cdb_impl.h"
+@@ -122,51 +123,6 @@ struct cdbr {
+ 	uint8_t entries_index_s1, entries_index_s2;
+ };
+ 
+-#if !defined(_KERNEL) && !defined(_STANDALONE)
+-static void
+-cdbr_unmap(void *cookie, void *base, size_t size)
+-{
+-	(void)cookie;
+-	munmap(base, size);
+-}
+-
+-/* ARGSUSED */
+-struct cdbr *
+-cdbr_open(const char *path, int flags)
+-{
+-	void *base;
+-	size_t size;
+-	int fd;
+-	struct cdbr *cdbr;
+-	struct stat sb;
+-
+-	if ((fd = open(path, O_RDONLY)) == -1)
+-		return NULL;
+-	if (fstat(fd, &sb) == -1) {
+-		close(fd);
+-		return NULL;
+-	}
+-
+-	if (sb.st_size >= SSIZE_MAX) {
+-		close(fd);
+-		SET_ERRNO(EINVAL);
+-		return NULL;
+-	}
+-
+-
+-	size = (size_t)sb.st_size;
+-	base = mmap(NULL, size, PROT_READ, MAP_FILE|MAP_SHARED, fd, 0);
+-	close(fd);
+-
+-	if (base == MAP_FAILED)
+-		return NULL;
+-
+-	cdbr = cdbr_open_mem(base, size, flags, cdbr_unmap, NULL);
+-	if (cdbr == NULL)
+-		munmap(base, size);
+-	return cdbr;
+-}
+-#endif
+ 
+ struct cdbr *
+ cdbr_open_mem(void *base, size_t size, int flags,
+diff --git a/src/cdbw.c b/src/cdbw.c
+index 1477e24..a76f5b3 100644
+--- a/src/cdbw.c
++++ b/src/cdbw.c
+@@ -38,23 +38,42 @@
+ #include <sys/cdefs.h>
+ __RCSID("$NetBSD: cdbw.c,v 1.5 2012/07/21 22:49:37 joerg Exp $");
+ 
+-#if 0
+-#include "namespace.h"
+-#endif
+ 
+ #if !HAVE_NBTOOL_CONFIG_H || HAVE_SYS_ENDIAN_H
+ #if defined(__NetBSD__) || defined(__FreeBSD__)
+ #include <sys/endian.h>
+ #else
+-#include <endian.h>
++#include <newlib/endian.h>
+ #endif
+ #endif
+ #include <sys/queue.h>
+-#include <cdbw.h>
++#include "cdbw.h"
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
+ 
++
++#ifdef TZR_TA_OPTEE
++#include <tee_api.h>
++
++#define malloc(size) TEE_Malloc(size, TEE_MALLOC_FILL_ZERO)
++#define free(ptr) TEE_Free(ptr)
++#define calloc(nmemb, size) TEE_Malloc(nmemb * size, TEE_MALLOC_FILL_ZERO)
++
++#elif defined(TZR_PTA_OPTEE)
++#define malloc(size) malloc(size)
++#define free(ptr) 	 free(ptr)
++#define calloc(nmemb, size) calloc(nmemb, size)
++#endif
++
++#define SET_ERRNO(val)
++
++
++#if defined(TZR_OPTEE) && defined(TZR_PTA_OPTEE)
++#include <crypto/crypto.h> // for random number gen.
++//void crypto_rng_read(void *, size_t);
++#endif
++
+ #include "cdb_impl.h"
+ 
+ #ifdef __weak_alias
+@@ -289,7 +308,13 @@ cdbw_stable_seeder(void)
+ static uint32_t
+ cdbw_random_seeder(void)
+ {
+-	return (uint32_t)random();
++	int32_t rndBuf;
++#ifdef TZR_TA_OPTEE
++	TEE_GenerateRandom(&rndBuf, sizeof(rndBuf));
++#elif defined(TZR_PTA_OPTEE)
++	crypto_rng_read(&rndBuf, sizeof(rndBuf));
++#endif
++	return (uint32_t)abs(rndBuf);
+ }
+ 
+ #define unused 0xffffffffU
+@@ -501,22 +526,32 @@ compute_size(uint32_t size)
+ 		return 4;
+ }
+ 
+-#define COND_FLUSH_BUFFER(n) do { 				\
+-	if (__predict_false(cur_pos + (n) >= sizeof(buf))) {	\
+-		ret = write(fd, buf, cur_pos);			\
+-		if (ret == -1 || (size_t)ret != cur_pos)	\
++
++#define COND_DOUBLE_BUFFER(n) do { 				\
++	if (__predict_false(cur_pos + (n) >= buf_len)) {	\
++		if ((n) > buf_len) {			\
++			buf_len = 2*buf_len + (n);					\
++		} else buf_len = 2*buf_len;						\
++		buf = realloc(buf, buf_len);			\
++		if (buf == NULL) {	\
++			free(buf);				\
+ 			return -1;				\
+-		cur_pos = 0;					\
++		}					\
+ 	}							\
+ } while (/* CONSTCOND */ 0)
+ 
+ static int
+-print_hash(struct cdbw *cdbw, struct state *state, int fd, const char *descr)
++print_hash(struct cdbw *cdbw, struct state *state,  /* [inout] */ uint8_t **res_buf,
++	/* [inout] */ size_t *res_size, const char *descr)
+ {
+ 	uint32_t data_size;
+-	uint8_t buf[90000];
+ 	size_t i, size, size2, cur_pos;
+-	ssize_t ret;
++
++	if (res_buf == NULL || res_size == NULL) return -1;
++
++	uint32_t buf_len = 100;
++	uint8_t *buf = malloc(buf_len);
++	if (buf == NULL) return -1;
+ 
+ 	memcpy(buf, "NBCDB\n\0", 7);
+ 	buf[7] = 1;
+@@ -529,7 +564,7 @@ print_hash(struct cdbw *cdbw, struct state *state, int fd, const char *descr)
+ 
+ 	size = compute_size(state->entries);
+ 	for (i = 0; i < state->entries; ++i) {
+-		COND_FLUSH_BUFFER(4);
++		COND_DOUBLE_BUFFER(4);
+ 		le32enc(buf + cur_pos, state->g[i]);
+ 		cur_pos += size;
+ 	}
+@@ -537,52 +572,84 @@ print_hash(struct cdbw *cdbw, struct state *state, int fd, const char *descr)
+ 	size = size * state->entries % size2;
+ 	if (size != 0) {
+ 		size = size2 - size;
+-		COND_FLUSH_BUFFER(4);
++		COND_DOUBLE_BUFFER(4);
+ 		le32enc(buf + cur_pos, 0);
+ 		cur_pos += size;
+ 	}
+ 	for (data_size = 0, i = 0; i < cdbw->data_counter; ++i) {
+-		COND_FLUSH_BUFFER(4);
++		COND_DOUBLE_BUFFER(4);
+ 		le32enc(buf + cur_pos, data_size);
+ 		cur_pos += size2;
+ 		data_size += cdbw->data_len[i];
+ 	}
+-	COND_FLUSH_BUFFER(4);
++	COND_DOUBLE_BUFFER(4);
+ 	le32enc(buf + cur_pos, data_size);
+ 	cur_pos += size2;
+ 
+ 	for (i = 0; i < cdbw->data_counter; ++i) {
+-		COND_FLUSH_BUFFER(cdbw->data_len[i]);
+-		if (cdbw->data_len[i] < sizeof(buf)) {
+-			memcpy(buf + cur_pos, cdbw->data_ptr[i],
+-			    cdbw->data_len[i]);
+-			cur_pos += cdbw->data_len[i];
++		COND_DOUBLE_BUFFER(cdbw->data_len[i]);
++		memcpy(buf + cur_pos, cdbw->data_ptr[i],
++			cdbw->data_len[i]);
++		cur_pos += cdbw->data_len[i];
++	}
++
++	/* Allocate and copy result buffer */
++	if (*res_buf == NULL) {
++		/* taken from vasprintf: "Only use realloc if the size we need is of the same (binary)
++		 * order of magnitued then the memory we allocated." */
++		if ( (buf_len >> 1) <= cur_pos ) {
++			*res_buf = realloc(buf, cur_pos);
+ 		} else {
+-			ret = write(fd, cdbw->data_ptr[i], cdbw->data_len[i]);
+-			if (ret == -1 || (size_t)ret != cdbw->data_len[i])
+-				return -1;
++			/* try allocate fresh buffer and copy the data */
++			*res_buf = malloc(cur_pos);
++			if (res_buf != NULL) {
++				memcpy(*res_buf, buf, cur_pos);
++				free(buf);
++			} else {
++				/* OOM fallback */
++				*res_buf = realloc(buf, cur_pos);
++			}
+ 		}
+-	}
+-	if (cur_pos != 0) {
+-		ret = write(fd, buf, cur_pos);
+-		if (ret == -1 || (size_t)ret != cur_pos)
++		*res_size = cur_pos;
++	/* Resize and copy result buffer */
++	} else {
++		uint8_t *p = realloc(*res_buf, *res_size + cur_pos);
++		if (p == NULL) {
++			free(buf);
+ 			return -1;
++		}
++		*res_buf = p;
++		memcpy(*res_buf + *res_size, buf, cur_pos);
++		*res_size = *res_size + cur_pos;
++		free(buf);
+ 	}
++	
+ 	return 0;
+ }
+ 
+ int
+-cdbw_output(struct cdbw *cdbw, int fd, const char descr[16],
+-    uint32_t (*seedgen)(void))
++cdbw_output(struct cdbw *cdbw,  /* [out] */ uint8_t **res_buf, /* [out] */ size_t *res_size,
++	const char descr[16], uint32_t (*seedgen)(void))
+ {
+ 	struct state state;
+ 	int rv;
+ 
++	if (res_buf == NULL || res_size == NULL) {
++		return -1;
++	}
++	*res_buf = NULL;
++	*res_size = 0;
++
+ 	if (cdbw->data_counter == 0 || cdbw->key_counter == 0) {
+ 		state.entries = 0;
+ 		state.seed = 0;
+-		print_hash(cdbw, &state, fd, descr);
+-		return 0;
++		rv = print_hash(cdbw, &state, res_buf, res_size, descr);
++		if (rv < 0 && *res_buf != NULL) {
++			free(*res_buf);
++			*res_buf = NULL;
++			*res_size = 0;
++		}
++		return rv;
+ 	}
+ 
+ #if HAVE_NBTOOL_CONFIG_H
+@@ -628,7 +695,12 @@ cdbw_output(struct cdbw *cdbw, int fd, const char descr[16],
+ 	} while (build_graph(cdbw, &state));
+ 
+ 	assign_nodes(&state);
+-	rv = print_hash(cdbw, &state, fd, descr);
++	rv = print_hash(cdbw, &state, res_buf, res_size, descr);
++	if (rv < 0 && *res_buf != NULL) {
++		free(*res_buf);
++		*res_buf = NULL;
++		*res_size = 0;
++	}
+ 
+ release:
+ 	free(state.g);
+diff --git a/src/cdbw.h b/src/cdbw.h
+index 67e27de..1e1f3ab 100644
+--- a/src/cdbw.h
++++ b/src/cdbw.h
+@@ -50,7 +50,7 @@ int		 cdbw_put_data(struct cdbw *, const void *, size_t,
+ int		 cdbw_put_key(struct cdbw *, const void *, size_t,
+     uint32_t);
+ uint32_t	 cdbw_stable_seeder(void);
+-int		 cdbw_output(struct cdbw *, int, const char[16],
++int		 cdbw_output(struct cdbw *, /* [out] */ uint8_t **res_buf, /* [inout] */ size_t *res_size, const char[16],
+     uint32_t (*)(void));
+ void		 cdbw_close(struct cdbw *);
+ 
+diff --git a/src/external/INFO.md b/src/external/INFO.md
+new file mode 100644
+index 0000000..27ec599
+--- /dev/null
++++ b/src/external/INFO.md
+@@ -0,0 +1,7 @@
++## external includes
++
++taken from newlib (adapted):
++* endian.h
++* _endian.h
++* strings.h
++* strcasecmp.c
+diff --git a/src/external/include/newlib/_endian.h b/src/external/include/newlib/_endian.h
+new file mode 100644
+index 0000000..3b3c0ed
+--- /dev/null
++++ b/src/external/include/newlib/_endian.h
+@@ -0,0 +1,24 @@
++#ifndef __NEWLIB_MACHINE_ENDIAN_H__
++#error "must be included via <newlib/endian.h>"
++#endif /* !__NEWLIB_MACHINE_ENDIAN_H__ */
++
++#ifndef _LITTLE_ENDIAN
++#define	_LITTLE_ENDIAN	1234
++#endif
++
++#ifndef _BIG_ENDIAN
++#define	_BIG_ENDIAN	4321
++#endif
++
++#ifndef _PDP_ENDIAN
++#define	_PDP_ENDIAN	3412
++#endif
++
++#ifndef _BYTE_ORDER
++#if defined(__IEEE_BIG_ENDIAN) || defined(__IEEE_BYTES_BIG_ENDIAN)
++#define	_BYTE_ORDER	_BIG_ENDIAN
++#else
++#define	_BYTE_ORDER	_LITTLE_ENDIAN
++#endif
++
++#endif
+diff --git a/src/external/include/newlib/endian.h b/src/external/include/newlib/endian.h
+new file mode 100644
+index 0000000..3d3407b
+--- /dev/null
++++ b/src/external/include/newlib/endian.h
+@@ -0,0 +1,96 @@
++#ifndef __NEWLIB_MACHINE_ENDIAN_H__
++#define	__NEWLIB_MACHINE_ENDIAN_H__
++
++#include <newlib/_endian.h>
++
++#if _BYTE_ORDER == _LITTLE_ENDIAN
++#define	_QUAD_HIGHWORD	1
++#define	_QUAD_LOWWORD	0
++#else
++#define	_QUAD_HIGHWORD	0
++#define	_QUAD_LOWWORD	1
++#endif
++
++#define	LITTLE_ENDIAN	_LITTLE_ENDIAN
++#define	BIG_ENDIAN	_BIG_ENDIAN
++#define	PDP_ENDIAN	_PDP_ENDIAN
++#define	BYTE_ORDER	_BYTE_ORDER
++
++#ifdef __GNUC__
++#define	__bswap16(_x)	__builtin_bswap16(_x)
++#define	__bswap32(_x)	__builtin_bswap32(_x)
++#define	__bswap64(_x)	__builtin_bswap64(_x)
++#else /* __GNUC__ */
++static __inline __uint16_t
++__bswap16(__uint16_t _x)
++{
++
++	return ((__uint16_t)((_x >> 8) | ((_x << 8) & 0xff00)));
++}
++
++static __inline __uint32_t
++__bswap32(__uint32_t _x)
++{
++
++	return ((__uint32_t)((_x >> 24) | ((_x >> 8) & 0xff00) |
++	    ((_x << 8) & 0xff0000) | ((_x << 24) & 0xff000000)));
++}
++
++static __inline __uint64_t
++__bswap64(__uint64_t _x)
++{
++
++	return ((__uint64_t)((_x >> 56) | ((_x >> 40) & 0xff00) |
++	    ((_x >> 24) & 0xff0000) | ((_x >> 8) & 0xff000000) |
++	    ((_x << 8) & ((__uint64_t)0xff << 32)) |
++	    ((_x << 24) & ((__uint64_t)0xff << 40)) |
++	    ((_x << 40) & ((__uint64_t)0xff << 48)) | ((_x << 56))));
++}
++#endif /* !__GNUC__ */
++
++#if _BYTE_ORDER == _LITTLE_ENDIAN
++#define	htonl(_x)	__bswap32(_x)
++#define	htons(_x)	__bswap16(_x)
++#define	ntohl(_x)	__bswap32(_x)
++#define ntohs(_x)	__bswap16(_x)
++#else
++#define	htonl(_x)	((__uint32_t)(_x))
++#define	htons(_x)	((__uint16_t)(_x))
++#define	ntohl(_x)	((__uint32_t)(_x))
++#define ntohs(_x)	((__uint16_t)(_x))
++#endif
++
++#if _BYTE_ORDER == _LITTLE_ENDIAN
++#define htobe16(x) __bswap16 (x)
++#define htole16(x) (x)
++#define be16toh(x) __bswap16 (x)
++#define le16toh(x) (x)
++
++#define htobe32(x) __bswap32 (x)
++#define htole32(x) (x)
++#define be32toh(x) __bswap32 (x)
++#define le32toh(x) (x)
++
++#define htobe64(x) __bswap64 (x)
++#define htole64(x) (x)
++#define be64toh(x) __bswap64 (x)
++#define le64toh(x) (x)
++
++#else
++#define htobe16(x) (x)
++#define htole16(x) __bswap16 (x)
++#define be16toh(x) (x)
++#define le16toh(x) __bswap16 (x)
++
++#define htobe32(x) (x)
++#define htole32(x) __bswap32 (x)
++#define be32toh(x) (x)
++#define le32toh(x) __bswap32 (x)
++
++#define htobe64(x) (x)
++#define htole64(x) __bswap64 (x)
++#define be64toh(x) (x)
++#define le64toh(x) __bswap64 (x)
++#endif
++
++#endif /* __NEWLIB_MACHINE_ENDIAN_H__ */
+diff --git a/src/mi_vector_hash.c b/src/mi_vector_hash.c
+index f3a8c65..6183503 100644
+--- a/src/mi_vector_hash.c
++++ b/src/mi_vector_hash.c
+@@ -49,7 +49,7 @@ __RCSID("$NetBSD: mi_vector_hash.c,v 1.1 2013/12/11 01:24:08 joerg Exp $");
+ #if defined(__NetBSD__) || defined(__FreeBSD__)
+ #include <sys/endian.h>
+ #else
+-#include <endian.h>
++#include <newlib/endian.h>
+ #endif
+ #endif
+ 
+@@ -58,9 +58,6 @@ __RCSID("$NetBSD: mi_vector_hash.c,v 1.1 2013/12/11 01:24:08 joerg Exp $");
+ #include <sys/systm.h>
+ #include <lib/libkern/libkern.h>
+ #else
+-#if 0
+-#include "namespace.h"
+-#endif
+ 
+ #include <stdint.h>
+ #include <stdlib.h>
+diff --git a/src/sub.mk b/src/sub.mk
+new file mode 100644
+index 0000000..31df639
+--- /dev/null
++++ b/src/sub.mk
+@@ -0,0 +1,10 @@
++global-incdirs-y += include
++
++incdirs-y += external/include
++
++srcs-y += cdbr.c
++srcs-y += cdbw.c
++srcs-y += mi_vector_hash.c
++
++# To remove a certain compiler flag, add a line like this
++#cflags-template_ta.c-y += -Wno-strict-prototypes

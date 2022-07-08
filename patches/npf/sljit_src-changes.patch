@@ -1,0 +1,168 @@
+Index: sljitConfig.h
+===================================================================
+--- sljitConfig.h	(Revision 313)
++++ sljitConfig.h	(Arbeitskopie)
+@@ -68,7 +68,8 @@
+ /* Implements a stack like data structure (by using mmap / VirtualAlloc). */
+ #ifndef SLJIT_UTIL_STACK
+ /* Enabled by default */
+-#define SLJIT_UTIL_STACK 1
++//#define SLJIT_UTIL_STACK 1
++#define SLJIT_UTIL_STACK 0
+ #endif
+ 
+ /* Single threaded application. Does not require any locks. */
+Index: sljitConfigInternal.h
+===================================================================
+--- sljitConfigInternal.h	(Revision 313)
++++ sljitConfigInternal.h	(Arbeitskopie)
+@@ -306,8 +306,17 @@
+ 
+ #elif (defined(__GNUC__) && (__GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3)))
+ 
++#include <arm32.h>
++/* TODO:
++ * 		CAUTION, clear_cache caused a pre-fetch abort at 0x0;
++ *      not sure yet if isb() + dsb() solve the task here;
++ * 		also not sure if isb() might even be sufficient
++ * If JIT executions randomly crash, double-check this one here again
++ */
+ #define SLJIT_CACHE_FLUSH(from, to) \
+-	__builtin___clear_cache((char*)from, (char*)to)
++	isb(); \
++	dsb();
++	//__builtin___clear_cache((char*)from, (char*)to)
+ 
+ #elif defined __ANDROID__
+ 
+Index: sljitExecAllocator.c
+===================================================================
+--- sljitExecAllocator.c	(Revision 313)
++++ sljitExecAllocator.c	(Arbeitskopie)
+@@ -65,8 +65,14 @@
+ /*  System (OS) functions                                                */
+ /* --------------------------------------------------------------------- */
+ 
++
++#include <bstgw/jit_pool.h>
++#include <mm/core_memprot.h>
++
++
+ /* 64 KByte. */
+-#define CHUNK_SIZE	0x10000
++//#define CHUNK_SIZE	0x10000
++#define CHUNK_SIZE		0x2000 // 8kB == 2 pages
+ 
+ /*
+    alloc_chunk / free_chunk :
+@@ -92,6 +98,42 @@
+ 	VirtualFree(chunk, 0, MEM_RELEASE);
+ }
+ 
++#elif TZR_OPTEE
++
++static SLJIT_INLINE void* alloc_chunk(sljit_uw size)
++{
++	tee_mm_entry_t *chunk = tee_mm_alloc(&tee_mm_sec_jit, size);
++	if (chunk == NULL) return MAP_FAILED;
++
++	uintptr_t pa = tee_mm_get_smem(chunk);
++	void *va = phys_to_virt(pa, MEM_AREA_TEE_RAM);
++	if (va == NULL) {
++		tee_mm_free(chunk);
++		EMSG("CRITICAL:  Failed to get VA for JIT memory chunk");
++		return MAP_FAILED;
++	}
++
++	return va;
++}
++
++static SLJIT_INLINE void free_chunk(void* chunk, sljit_uw size)
++{
++	(void)size;
++	paddr_t pa = virt_to_phys(chunk);
++	if (pa == 0) {
++		EMSG("CRITICAL:  Failed to get PA for JIT memory chunk");
++		return;
++	}
++
++	tee_mm_entry_t *pool_entry = tee_mm_find(&tee_mm_sec_jit, pa);
++	if (pool_entry == NULL) {
++		EMSG("CRITICAL:  Failed to find JIT chunk for given PA");
++		return;
++	}
++
++	tee_mm_free(pool_entry);
++}
++
+ #else
+ 
+ static SLJIT_INLINE void* alloc_chunk(sljit_uw size)
+Index: sljitUtils.c
+===================================================================
+--- sljitUtils.c	(Revision 313)
++++ sljitUtils.c	(Arbeitskopie)
+@@ -108,7 +108,11 @@
+ 
+ #if (defined SLJIT_EXECUTABLE_ALLOCATOR && SLJIT_EXECUTABLE_ALLOCATOR)
+ 
++#ifndef TZR_PTA_OPTEE
+ #include <pthread.h>
++#else
++#include <pthwrap.h>
++#endif /* !TZR_PTA_OPTEE */
+ 
+ static pthread_mutex_t allocator_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+@@ -126,7 +130,11 @@
+ 
+ #if (defined SLJIT_UTIL_GLOBAL_LOCK && SLJIT_UTIL_GLOBAL_LOCK)
+ 
++#ifndef TZR_PTA_OPTEE
+ #include <pthread.h>
++#else
++#include <pthwrap.h>
++#endif /* !TZR_PTA_OPTEE */
+ 
+ static pthread_mutex_t global_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+@@ -153,11 +161,16 @@
+ #ifdef _WIN32
+ #include "windows.h"
+ #else
+-/* Provides mmap function. */
+-#include <sys/mman.h>
++/* Return value of `mmap' in case of an error.  */
++#define MAP_FAILED	((void *) -1)
+ /* For detecting the page size. */
+ #include <unistd.h>
+ 
++#ifdef TZR_PTA_OPTEE
++// NOTE: just to avoid all that unsupported /dev/zero file I/O
++#define MAP_ANON
++#endif /* TZR_PTA_OPTEE */
++
+ #ifndef MAP_ANON
+ 
+ #include <fcntl.h>
+@@ -175,7 +188,11 @@
+ 
+ #else /* SLJIT_SINGLE_THREADED */
+ 
++#ifndef TZR_PTA_OPTEE
+ #include <pthread.h>
++#else
++#include <pthwrap.h>
++#endif /* !TZR_PTA_OPTEE */
+ 
+ static pthread_mutex_t dev_zero_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+@@ -225,7 +242,7 @@
+ 	}
+ #else
+ 	if (!sljit_page_align) {
+-		sljit_page_align = sysconf(_SC_PAGESIZE);
++		sljit_page_align = 4096;
+ 		/* Should never happen. */
+ 		if (sljit_page_align < 0)
+ 			sljit_page_align = 4096;

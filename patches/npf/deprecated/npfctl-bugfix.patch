@@ -1,0 +1,36 @@
+diff --git a/src/npfctl/npfctl.c b/src/npfctl/npfctl.c
+index c604ea2..3a9fc9c 100644
+--- a/src/npfctl/npfctl.c
++++ b/src/npfctl/npfctl.c
+@@ -285,6 +285,9 @@ npfctl_load(int fd)
+ 	size_t blen;
+ 	void *blob;
+ 	int error;
++/* BUGFIX */
++	int db_fd;
++/* \ */
+ 
+ 	/*
+ 	 * The file may change while reading - we are not handling this,
+@@ -296,12 +299,20 @@ npfctl_load(int fd)
+ 	if ((blen = sb.st_size) == 0) {
+ 		err(EXIT_FAILURE, "saved configuration file is empty");
+ 	}
+-	blob = mmap(NULL, blen, PROT_READ, MAP_FILE | MAP_PRIVATE, fd, 0);
++/* BUGFIX */
++	if ( (db_fd = open(NPF_DB_PATH, O_RDONLY)) < 0) {
++		err(EXIT_FAILURE, "couldn't open saved configuration file for reading");
++	}
++	blob = mmap(NULL, blen, PROT_READ, MAP_FILE | MAP_PRIVATE, db_fd, 0);
++/* \ */
+ 	if (blob == MAP_FAILED) {
+ 		err(EXIT_FAILURE, "mmap");
+ 	}
+ 	ncf = npf_config_import(blob, blen);
+ 	munmap(blob, blen);
++/* BUGFIX */
++	close(db_fd);
++/* \ */
+ 	if (ncf == NULL) {
+ 		return errno;
+ 	}

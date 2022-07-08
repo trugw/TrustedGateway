@@ -1,0 +1,100 @@
+# Environment Variables Used:
+#   1 loader = The command used to load a file into memory
+#       Usage: $loader [address] [file]
+#       Examples: "load mmc 0:1" or "tftpboot"
+#   2 bootdev = The boot device
+#       Example: "mmcblk0"
+#   3 cpu = The IMX CPU type
+#       Example: "6Q"
+#   4 board = The IMX development board type
+#       Example: "nitrogen6x"
+
+setenv bootargs ''
+
+m4=''
+a_base=0x10000000
+if itest.s x51 == "x${cpu}" ; then
+	a_base=0x90000000
+elif itest.s x53 == "x${cpu}"; then
+	a_base=0x70000000
+elif itest.s x6SX == "x${cpu}" || itest.s x7D == "x${cpu}"; then
+	a_base=0x80000000
+	if itest.s "x1" == "x$m4enabled" ; then
+		run m4boot;
+		m4='-m4';
+	fi
+fi
+
+setexpr a_zImage  ${a_base} + 0x00800000
+setexpr a_fdt     ${a_base} + 0x03000000
+setexpr a_ramdisk ${a_base} + 0x03800000
+setexpr a_sImage  ${a_base} + 0x10000000
+
+if itest.s "x" == "x${dtbname}" ; then
+	if itest.s x6SOLO == "x${cpu}" ; then
+		dtbname=imx6dl-${board}.dtb;
+	elif itest.s x6DL == "x${cpu}" ; then
+		dtbname=imx6dl-${board}.dtb;
+	elif itest.s x6QP == "x${cpu}" ; then
+		dtbname=imx6qp-${board}.dtb;
+	elif itest.s x6SX == "x${cpu}" ; then
+		dtbname=imx6sx-${board}${m4}.dtb;
+	elif itest.s x7D == "x${cpu}" ; then
+		dtbname=imx7d-${board}${m4}.dtb;
+	elif itest.s x51 == "x${cpu}" ; then
+		dtbname=imx51-${board}${m4}.dtb;
+	elif itest.s x53 == "x${cpu}" ; then
+		dtbname=imx53-${board}${m4}.dtb;
+	else
+		dtbname=imx6q-${board}.dtb;
+	fi
+fi
+
+if ${loader} ${a_fdt} /boot/${dtbname} ; then
+	fdt addr ${a_fdt}
+	setenv fdt_high 0xffffffff
+  fdt resize
+else
+	echo "Error loading /boot/${dtbname}";
+	exit;
+fi
+
+setenv bootargs "$bootargs fixrtc cpu=6Q board=nitrogen6x systemd.gpt_auto=0"
+# TODO: Debian /proc/cmdline shows reset_cause=0x1, not 0x10
+setenv bootargs "$bootargs loglevel=7 reset_cause=0x1"
+setenv bootargs "$bootargs console=${console},115200 vmalloc=400M consoleblank=0 rootwait"
+
+#root=/dev/mmcblk0p1
+setenv bootargs $bootargs root=$bootdev
+
+#if itest.s "x" != "x$disable_giga" ; then
+#  setenv bootargs $bootargs fec.disable_giga=1
+#fi
+
+if itest.s "x" != "x$cma" ; then
+	setenv bootargs $bootargs cma=$cma
+fi
+
+if itest.s "x" != "x$gpumem" ; then
+	setenv bootargs $bootargs galcore.contiguousSize=$gpumem
+fi
+
+setenv bootargs $bootargs $extbootargs
+
+if itest.s "x" != "x$show_fdt" ; then
+	fdt print /
+fi
+
+if itest.s "x" != "x$show_env" ; then
+	printenv
+fi
+
+if ${loader} ${a_sImage} /sImage ; then
+	if ${loader} ${a_ramdisk} /uramdisk.img ; then
+    if ${loader} ${a_zImage} /vmlinuz ; then
+		  bootm ${a_sImage} ${a_ramdisk} ${a_fdt} ;
+    fi
+	fi
+fi
+
+echo "Error loading the OS"
