@@ -1,0 +1,20 @@
+# Notes:
+# * "in" on NW means, coming from U_R
+# * "out" on NW means, going to U_R
+#
+# We use the --reverse option of iPerf3 for our tests,
+# i.e., VNIC connects TO the clients, which is why we
+# use swapped direction for our test FW rules.
+# Note that the rule direction here does not affect
+# that anyway all packets are checked by the FW.
+
+group "nw" on NW {
+  pass stateful in final proto tcp from 192.168.178.49 to any port 5201
+  pass stateful out final proto tcp to 192.168.178.49 port 4433
+  pass stateful out final proto tcp to 192.168.178.49 port 8000
+  block all
+}
+
+group default {
+  pass all
+}

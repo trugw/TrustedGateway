@@ -1,0 +1,14 @@
+allow_fwd_dropped_stateful
+
+group "nics" on "imx6q-fec" {
+pass final proto tcp to 172.16.0.7 port 5201
+pass final proto tcp from 172.16.0.7 port 5201
+pass in final proto tcp to 192.168.178.49 port 4433
+pass out final proto tcp from 192.168.178.49 port 4433
+pass in final proto tcp to 192.168.178.49 port 8000
+pass out final proto tcp from 192.168.178.49 port 8000
+block all
+}
+group default {
+pass all
+}

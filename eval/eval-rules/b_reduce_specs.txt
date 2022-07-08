@@ -1,0 +1,12 @@
+b. reduce specs
+
+group "nw" on NW {
+  pass stateful in final proto tcp to any port 5201
+  pass stateful out final proto tcp to any port 4433
+  pass stateful out final proto tcp to any port 8000
+  block all
+}
+
+group default {
+  pass all
+}

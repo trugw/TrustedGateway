@@ -1,0 +1,14 @@
+# Notes:
+# * "in" on imx6q-fec means, coming from External clients
+# * "out" means, to External clients
+
+group "nics" on "imx6q-fec" {
+  pass stateful final proto tcp to 172.16.0.7 port 5201
+  pass stateful in final proto tcp to 192.168.178.49 port 4433
+  pass stateful in final proto tcp to 192.168.178.49 port 8000
+  block all
+}
+
+group default {
+  pass all
+}

@@ -1,0 +1,16 @@
+c. explicitly split
+
+group "nwIN" in on NW {
+  pass stateful final proto tcp from 192.168.178.49 to any port 5201
+  block all
+}
+
+group "nwOUT" out on NW {
+  pass stateful out final proto tcp to 192.168.178.49 port 4433
+  pass stateful out final proto tcp to 192.168.178.49 port 8000
+  block all
+}
+
+group default {
+  pass all
+}

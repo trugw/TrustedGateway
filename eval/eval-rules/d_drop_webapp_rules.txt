@@ -1,0 +1,10 @@
+d. drop webapp rules
+
+group "nw" on NW {
+  pass stateful in final proto tcp from 192.168.178.49 to any port 5201
+  block all
+}
+
+group default {
+  pass all
+}

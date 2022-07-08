@@ -1,0 +1,17 @@
+a. droppping the "stateful"
+
+group "nw" on NW {
+pass out final proto tcp to 192.168.178.49 port 4433
+pass in final proto tcp from 192.168.178.49 port 4433
+pass out final proto tcp to 192.168.178.49 port 8000
+pass in final proto tcp from 192.168.178.49 port 8000
+pass in final proto tcp from 192.168.178.42
+pass out final proto tcp from any port 5203
+pass in final proto tcp from 192.168.178.49 to any port 5201
+pass out final proto tcp from any port 5201 to 192.168.178.49
+block all
+}
+group default {
+pass all
+}
+

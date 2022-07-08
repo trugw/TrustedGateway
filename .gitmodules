@@ -34,3 +34,6 @@
 [submodule "wasm_npfctl/npf"]
 	path = wasm_npfctl/npf
 	url = https://github.com/trugw/npf.git
+[submodule "eval/iperf"]
+	path = eval/iperf
+	url = https://github.com/esnet/iperf.git
