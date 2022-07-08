@@ -10,6 +10,11 @@ TruGW/OP-TEE build process.
 The TA is a minimal HTTPS server which authenticates users via TLS client certificates,
 ships a small trusted web bundle, and exposes special, access-guarded REST interfaces.
 
+It is possible for the admins to submit NPF firewall policies to TruGW via the web app.
+Normal users can upload their TLS client certificate to request admin access.
+The master admin sees the list of uploaded admin certificates and can grant/deny
+access to them.
+
 The `npfctl` WASM app (see wasm_npfctl/ in root directory) is not directly
 shipped by ConfigService, but rather is fetched by the small trusted web bundle
 using script tags and SRI (subresource integrity), as well as XHRs (together with CORS).
@@ -134,6 +139,13 @@ The instructions are also provided in B. of the main README.
     ```
 
 ## Limitations / Todos
+* The maximum firewall configuration length supported by ConfigService is currently
+    limited by statically-sized internal buffers.
+
+* Configuration of the routing rules and IP addresses is not yet possible via the
+    ConfigService web app, but rather statically determined by Nettrug (see
+    `nettrug/pta/config.c`).
+
 * The client certificate of the master admin is currently hardcoded in `ta/sw_crt_mng.c`
     rather than being dynamically registered and loaded.
 
