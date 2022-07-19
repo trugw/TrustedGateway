@@ -24,7 +24,7 @@ They are interconnected using a [TL-SG105E](https://www.tp-link.com/de/business-
 ```
 | Host L | <--Gbps--> |        |
                       |        |
-| TrUGW  | <--Gbps--> | Switch |
+| TruGW  | <--Gbps--> | Switch |
                       |        |
 | Host M | <--Gbps--> |        |
 ```
